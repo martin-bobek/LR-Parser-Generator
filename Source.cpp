@@ -4,6 +4,10 @@
 #include <memory>
 #include <vector>
 
+#define GRAMMER 1
+
+// try to restrict access as much as possible
+
 class Production;
 class Terminal;
 class NonTerminal;
@@ -35,9 +39,14 @@ private:
 	std::vector<const Terminal *> follow;
 	std::vector <const NonTerminal *> followConstraints;
 	std::vector<Production> productions;
+
+public:			
+	void AddProduction(Production &&production);
 };
 class Terminal : public Symbol
 {
+public:
+	Terminal(char c) : c(c) {}
 	bool Nullable() const { return false; }
 	std::vector<const Terminal *> First() const { return{ this }; }
 	void ExtractFollowConstraints(const NonTerminal *, std::vector<Symbol *>::const_iterator, std::vector<Symbol *>::const_iterator) {}
@@ -52,6 +61,9 @@ public:
 	void FollowConstraints(const NonTerminal *) const;
 private:
 	std::vector<Symbol *> symbols;
+
+public:
+	Production(std::vector<Symbol *> &&symbols) : symbols(std::move(symbols)) {}
 };
 class Grammer
 {
@@ -59,9 +71,99 @@ public:
 	void InitializeNullable();
 	void InitializeFirst();
 	void InitializeFollow();
+
+	Grammer(std::unique_ptr<NonTerminal> &&start);
+	void AddNonTerminal(std::unique_ptr<NonTerminal> &&nonTerminal);
 private:
 	std::vector<std::unique_ptr<NonTerminal>> nonTerminals;
 };
+
+void NonTerminal::AddProduction(Production &&production)
+{
+	productions.push_back(std::move(production));
+}
+Grammer::Grammer(std::unique_ptr<NonTerminal> &&start)
+{
+	nonTerminals.push_back(std::move(start));
+}
+void Grammer::AddNonTerminal(std::unique_ptr<NonTerminal> &&nonTerminal)
+{
+	nonTerminals.push_back(std::move(nonTerminal));
+}
+
+int main()
+{
+#if (GRAMMER == 1)
+	Terminal c('@'), star('*'), ors('|'), open('('), close(')');
+	NonTerminal *Q = new NonTerminal(),
+				*R = new NonTerminal(),
+				*S = new NonTerminal(),
+				*T = new NonTerminal(),
+				*U = new NonTerminal(),
+				*V = new NonTerminal(),
+				*W = new NonTerminal();
+	Q->AddProduction(Production({ S, R }));
+	R->AddProduction(Production({ &ors, S, R }));
+	R->AddProduction(Production({}));
+	S->AddProduction(Production({ U, T }));
+	T->AddProduction(Production({ U, T }));
+	T->AddProduction(Production({}));
+	U->AddProduction(Production({ W, V }));
+	V->AddProduction(Production({ &star, V }));
+	V->AddProduction(Production({}));
+	W->AddProduction(Production({ &c }));
+	W->AddProduction(Production({ &open, Q, &close }));
+	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(Q));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(R));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(S));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(T));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(U));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(V));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(W));
+#endif
+#if (GRAMMER == 2)
+	Terminal a('a'), b('b'), c('c');
+	NonTerminal *T = new NonTerminal(), *R = new NonTerminal();
+	T->AddProduction(Production({ R }));
+	T->AddProduction(Production({ &a, T, &c }));
+	R->AddProduction(Production({}));
+	R->AddProduction(Production({ R, &b, R }));
+	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(T));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(R));
+#endif
+	grammer.InitializeNullable();
+	grammer.InitializeFirst();
+	grammer.InitializeFollow();
+}
+
+std::vector<const Terminal *> SetUnion(const std::vector<const Terminal *> &setA, const std::vector<const Terminal *> &setB)
+{
+	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
+	std::vector<const Terminal *> result;
+	result.reserve(sizeA + sizeB);
+	while (true)
+	{
+		if (iA == sizeA)
+		{
+			while (iB < sizeB)
+				result.push_back(setB[iB++]);
+			return result;
+		}
+		if (iB == sizeB)
+		{
+			while (iA < sizeA)
+				result.push_back(setA[iA++]);
+			return result;
+		}
+
+		if (setA[iA] < setB[iB])
+			result.push_back(setA[iA++]);
+		else if (setB[iB] < setA[iA])
+			result.push_back(setB[iB++]);
+		else
+			result.push_back(setA[++iB, iA++]);
+	}
+}
 
 bool NonTerminal::NullableSetup()
 {
@@ -176,39 +278,5 @@ void Grammer::InitializeFollow()
 		for (auto &nonTerminal : nonTerminals)
 			if (!nonTerminal->SatisfyFollowConstraints())
 				valid = false;
-	}
-}
-
-int main()
-{
-	
-}
-
-std::vector<const Terminal *> SetUnion(const std::vector<const Terminal *> &setA, const std::vector<const Terminal *> &setB)
-{
-	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
-	std::vector<const Terminal *> result;
-	result.reserve(sizeA + sizeB);
-	while (true)
-	{
-		if (iA == sizeA)
-		{
-			while (iB < sizeB)
-				result.push_back(setB[iB++]);
-			return result;
-		}
-		if (iB == sizeB)
-		{
-			while (iA < sizeA)
-				result.push_back(setA[iA++]);
-			return result;
-		}
-
-		if (setA[iA] < setB[iB])
-			result.push_back(setA[iA++]);
-		else if (setB[iB] > setA[iA])
-			result.push_back(setB[iB++]);
-		else
-			result.push_back(setA[++iB, iA++]);
 	}
 }
