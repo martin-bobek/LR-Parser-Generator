@@ -4,7 +4,7 @@
 #include <memory>
 #include <vector>
 
-#define GRAMMER 1
+#define GRAMMER 3
 
 // try to restrict access as much as possible
 
@@ -130,6 +130,25 @@ int main()
 	R->AddProduction(Production({ R, &b, R }));
 	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(T));
 	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(R));
+#endif
+#if (GRAMMER == 3)
+	Terminal a('a'), b('b');
+	NonTerminal *N = new NonTerminal(),
+				*A = new NonTerminal(),
+				*B = new NonTerminal(),
+				*C = new NonTerminal();
+	N->AddProduction(Production({ A,B }));
+	N->AddProduction(Production({ B, A }));
+	A->AddProduction(Production({ &a }));
+	A->AddProduction(Production({ C, A, C }));
+	B->AddProduction(Production({ &b }));
+	B->AddProduction(Production({ C, B, C }));
+	C->AddProduction(Production({ &a }));
+	C->AddProduction(Production({ &b }));
+	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(N));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(A));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(B));
+	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(C));
 #endif
 	grammer.InitializeNullable();
 	grammer.InitializeFirst();
