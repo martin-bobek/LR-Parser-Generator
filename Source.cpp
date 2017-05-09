@@ -9,6 +9,7 @@
 
 // try to restrict access as much as possible
 // try to remove as many std::move's as possible (remember to write both a default move constructor and assignment in all relevant classes!).
+// add as many noexcepts as possible
 
 class Production;
 class Terminal;
@@ -19,11 +20,13 @@ class NFA;
 typedef std::unique_ptr<State> pState;
 typedef std::unique_ptr<NonTerminal> pNonTerminal;
 
+std::vector<const Terminal *> SetUnion(const std::vector<const Terminal *> &setA, const std::vector<const Terminal *> &setB);
+
 class NFA
 {
 public:
 	NFA() = default;
-	NFA(Production &production);
+	void Initialize(Production &production);
 	NFA(const NFA &) = delete;
 	NFA(NFA &&rhs) = default;
 	NFA &operator=(const NFA &) = delete;
@@ -35,9 +38,6 @@ private:
 
 	std::vector<pState> states;
 };
-
-std::vector<const Terminal *> SetUnion(const std::vector<const Terminal *> &setA, const std::vector<const Terminal *> &setB);
-
 class Symbol
 {
 public:
@@ -45,6 +45,25 @@ public:
 	virtual std::vector<const Terminal *> First() const = 0;
 	virtual void ExtractFollowConstraints(const NonTerminal *lhs, std::vector<Symbol *>::const_iterator it, std::vector<Symbol *>::const_iterator end) = 0;
 	virtual std::vector<const State *> NfaRoots() = 0;
+};
+class Production
+{
+public:
+	bool ComputeNullable() const;
+	std::vector<const Terminal *> ComputeFirst() const;
+	void FollowConstraints(const NonTerminal *) const;
+
+	void StartNfa() { nfa.Initialize(*this); }
+	NFA MoveNfa() { return std::move(nfa); }
+	const State *GetRoot();
+	size_t Size() const { return symbols.size(); }
+	Symbol *operator[](size_t index) const { return symbols[index]; }
+private:
+	std::vector<Symbol *> symbols;
+	NFA nfa;
+	bool nfa_init = false;
+public:
+	Production(std::vector<Symbol *> &&symbols) : symbols(std::move(symbols)) {}
 };
 class NonTerminal : public Symbol
 {
@@ -60,6 +79,7 @@ public:
 	bool SatisfyFollowConstraints();
 	std::vector<const State *> NfaRoots();
 	std::vector<NFA> GetBranches();
+	void StartNfa() { productions[0].StartNfa(); }
 private:
 	bool nullable = false;
 	std::vector<const Terminal *> first;
@@ -81,24 +101,6 @@ public:
 private:
 	char c;
 };
-class Production
-{
-public:
-	bool ComputeNullable() const;
-	std::vector<const Terminal *> ComputeFirst() const;
-	void FollowConstraints(const NonTerminal *) const;
-
-	NFA MoveNfa() { return std::move(nfa); }
-	const State *GetRoot();
-	size_t Size() const { return symbols.size(); }
-	Symbol *operator[](size_t index) const { return symbols[index]; }
-private:
-	std::vector<Symbol *> symbols;
-	NFA nfa;
-	bool nfa_init = false;
-public:
-	Production(std::vector<Symbol *> &&symbols) : symbols(std::move(symbols)) {}
-};
 class Grammer
 {
 public:
@@ -111,7 +113,6 @@ public:
 private:
 	std::vector<pNonTerminal> nonTerminals;
 };
-
 class State
 {
 public:
@@ -126,65 +127,6 @@ private:
 	std::vector<Transition> transitions;
 	const bool accepting;
 };
-
-std::vector<NFA> NonTerminal::GetBranches()
-{
-	std::vector<NFA> branches;
-	branches.reserve(productions.size());
-	for (auto &production : productions)
-		branches.push_back(production.MoveNfa());
-	return branches;
-}
-const State *Production::GetRoot()
-{
-	if (nfa.Empty())
-		nfa = NFA(*this);
-	return nfa.GetRoot();
-}
-std::vector<const State *> NonTerminal::NfaRoots()
-{
-	std::vector<const State *> branches;
-	branches.reserve(productions.size());
-	for (auto &production : productions)
-		branches.push_back(production.GetRoot());
-	return branches;
-}
-NFA NFA::Merge(std::vector<std::vector<NFA>> &&nfas)
-{
-	size_t size = 0;
-	for (auto &vector : nfas)
-		for (auto &nfa : vector)
-			size += nfa.states.size();
-	NFA result;
-	result.states.reserve(size);
-	for (auto &vector : nfas)
-		for (auto &nfa : vector)
-			result.states.insert(result.states.end(), std::make_move_iterator(nfa.states.begin()), std::make_move_iterator(nfa.states.begin()));
-	return result;
-}
-NFA::NFA(Production &production)
-{
-	const size_t size = production.Size();
-	states.reserve(size + 1);
-	for (size_t i = 0; i < size; i++)
-		states.push_back(pState(new State));
-	states.push_back(pState(new State(true)));
-	for (size_t i = 0; i < size; i++)
-	{
-		states[i]->AddTransition(production[i], states[i + 1].get());
-		std::vector<const State *> roots = production[i]->NfaRoots();
-		for (const auto &root : roots)
-			states[i]->AddTransition(EPSILON, root);
-	}
-}
-NFA Grammer::GetNfa() const
-{
-	std::vector<std::vector<NFA>> nfas;
-	nfas.reserve(nonTerminals.size());
-	for (auto &nonTerminal : nonTerminals)
-		nfas.push_back(nonTerminal->GetBranches());
-	return NFA::Merge(std::move(nfas));
-}
 
 int main()
 {
@@ -208,13 +150,13 @@ int main()
 	V->AddProduction(Production({}));
 	W->AddProduction(Production({ &c }));
 	W->AddProduction(Production({ &open, Q, &close }));
-	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(Q));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(R));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(S));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(T));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(U));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(V));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(W));
+	Grammer grammer = Grammer(pNonTerminal(Q));
+	grammer.AddNonTerminal(pNonTerminal(R));
+	grammer.AddNonTerminal(pNonTerminal(S));
+	grammer.AddNonTerminal(pNonTerminal(T));
+	grammer.AddNonTerminal(pNonTerminal(U));
+	grammer.AddNonTerminal(pNonTerminal(V));
+	grammer.AddNonTerminal(pNonTerminal(W));
 #endif
 #if (GRAMMER == 2)
 	Terminal a('a'), b('b'), c('c');
@@ -223,8 +165,8 @@ int main()
 	T->AddProduction(Production({ &a, T, &c }));
 	R->AddProduction(Production({}));
 	R->AddProduction(Production({ R, &b, R }));
-	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(T));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(R));
+	Grammer grammer = Grammer(pNonTerminal(T));
+	grammer.AddNonTerminal(pNonTerminal(R));
 #endif
 #if (GRAMMER == 3)
 	Terminal a('a'), b('b');
@@ -240,10 +182,10 @@ int main()
 	B->AddProduction(Production({ C, B, C }));
 	C->AddProduction(Production({ &a }));
 	C->AddProduction(Production({ &b }));
-	Grammer grammer = Grammer(std::unique_ptr<NonTerminal>(N));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(A));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(B));
-	grammer.AddNonTerminal(std::unique_ptr<NonTerminal>(C));
+	Grammer grammer = Grammer(pNonTerminal(N));
+	grammer.AddNonTerminal(pNonTerminal(A));
+	grammer.AddNonTerminal(pNonTerminal(B));
+	grammer.AddNonTerminal(pNonTerminal(C));
 #endif
 	grammer.InitializeNullable();
 	grammer.InitializeFirst();
@@ -280,6 +222,43 @@ std::vector<const Terminal *> SetUnion(const std::vector<const Terminal *> &setA
 	}
 }
 
+NFA NFA::Merge(std::vector<std::vector<NFA>> &&nfas)
+{
+	size_t size = 0;
+	for (auto &vector : nfas)
+		for (auto &nfa : vector)
+			size += nfa.states.size();
+	NFA result;
+	result.states.reserve(size);
+	for (auto &vector : nfas)
+		for (auto &nfa : vector)
+			result.states.insert(result.states.end(), std::make_move_iterator(nfa.states.begin()), std::make_move_iterator(nfa.states.end()));
+	return result;
+}
+void NFA::Initialize(Production &production)
+{
+	const size_t size = production.Size();
+	states.reserve(size + 1);
+	for (size_t i = 0; i < size; i++)
+		states.push_back(pState(new State));
+	states.push_back(pState(new State(true)));
+	for (size_t i = 0; i < size; i++)
+	{
+		states[i]->AddTransition(production[i], states[i + 1].get());
+		std::vector<const State *> roots = production[i]->NfaRoots();
+		for (const auto &root : roots)
+			states[i]->AddTransition(EPSILON, root);
+	}
+}
+NFA Grammer::GetNfa() const
+{
+	nonTerminals[0]->StartNfa();
+	std::vector<std::vector<NFA>> nfas;
+	nfas.reserve(nonTerminals.size());
+	for (auto &nonTerminal : nonTerminals)
+		nfas.push_back(nonTerminal->GetBranches());
+	return NFA::Merge(std::move(nfas));
+}
 bool NonTerminal::NullableSetup()
 {
 	if (nullable)
@@ -335,6 +314,22 @@ bool NonTerminal::SatisfyFollowConstraints()
 	follow = std::move(result);
 	return false;
 }
+std::vector<const State *> NonTerminal::NfaRoots()
+{
+	std::vector<const State *> branches;
+	branches.reserve(productions.size());
+	for (auto &production : productions)
+		branches.push_back(production.GetRoot());
+	return branches;
+}
+std::vector<NFA> NonTerminal::GetBranches()
+{
+	std::vector<NFA> branches;
+	branches.reserve(productions.size());
+	for (auto &production : productions)
+		branches.push_back(production.MoveNfa());
+	return branches;
+}
 bool Production::ComputeNullable() const
 {
 	for (auto symbol : symbols)
@@ -346,6 +341,12 @@ void Production::FollowConstraints(const NonTerminal *lhs) const
 {
 	for (std::vector<Symbol *>::const_iterator it = symbols.begin(); it != symbols.end(); it++)
 		(*it)->ExtractFollowConstraints(lhs, it + 1, symbols.end());
+}
+const State *Production::GetRoot()
+{
+	if (nfa.Empty())
+		nfa.Initialize(*this);
+	return nfa.GetRoot();
 }
 std::vector<const Terminal *> Production::ComputeFirst() const
 {
