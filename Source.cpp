@@ -5,8 +5,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cctype>
 
-#define GRAMMER		1
+#define GRAMMER		0
 #define EPSILON		nullptr
 
 // try to restrict access as much as possible
@@ -119,7 +120,7 @@ private:
 	vector<size_t> gos;
 	bool acceptor;
 public:			
-	void AddProduction(Production &&production);
+	void AddProduction(vector<Symbol *> &&production);
 	void NonTerminal::PrintActions(ostream &os) const;
 	void PrintReduce(ostream &os, size_t production) const;
 	void PrepareGos(size_t numStates) { gos.resize(numStates); }
@@ -164,6 +165,7 @@ private:
 class Grammer
 {
 public:
+	static Grammer GetGrammer();
 	void InitializeNullable();
 	void InitializeFirst();
 	void InitializeFollow();
@@ -174,6 +176,7 @@ public:
 
 	void Print(ostream &os) const;
 private:
+	Grammer();
 	class DFA
 	{
 	public:
@@ -743,56 +746,6 @@ int main(int argc, char *argv[])
 		std::cerr << "Improper number of arguments entered!" << std::endl;
 		return 1;
 	}
-#if (GRAMMER == 1)
-	pTerminal c(new Terminal("Char")),
-		star(new Terminal("Star")),
-		ors(new Terminal("Or")),
-		open(new Terminal("Open")),
-		close(new Terminal("Close"));
-	pNonTerminal Q(new NonTerminal("Q")),
-		R(new NonTerminal("R")),
-		S(new NonTerminal("S")),
-		T(new NonTerminal("T")),
-		U(new NonTerminal("U")),
-		V(new NonTerminal("V")),
-		W(new NonTerminal("W"));
-	Q->AddProduction(Production({ S.get(), R.get() }));
-	R->AddProduction(Production({ ors.get(), S.get(), R.get() }));
-	R->AddProduction(Production({}));
-	S->AddProduction(Production({ U.get(), T.get() }));
-	T->AddProduction(Production({ U.get(), T.get() }));
-	T->AddProduction(Production({}));
-	U->AddProduction(Production({ W.get(), V.get() }));
-	V->AddProduction(Production({ star.get(), V.get() }));
-	V->AddProduction(Production({}));
-	W->AddProduction(Production({ c.get() }));
-	W->AddProduction(Production({ open.get(), Q.get(), close.get() }));
-	Grammer grammer = Grammer(move(Q));
-	grammer.AddNonTerminal(move(R));
-	grammer.AddNonTerminal(move(S));
-	grammer.AddNonTerminal(move(T));
-	grammer.AddNonTerminal(move(U));
-	grammer.AddNonTerminal(move(V));
-	grammer.AddNonTerminal(move(W));
-	grammer.AddTerminal(move(c));
-	grammer.AddTerminal(move(star));
-	grammer.AddTerminal(move(ors));
-	grammer.AddTerminal(move(open));
-	grammer.AddTerminal(move(close));
-#endif
-#if (GRAMMER == 2)
-	pTerminal a(new Terminal("A")), b(new Terminal("B")), c(new Terminal("C"));
-	pNonTerminal T(new NonTerminal("T")), R(new NonTerminal("R"));
-	T->AddProduction(Production({ R.get() }));
-	T->AddProduction(Production({ a.get(), T.get(), c.get() }));
-	R->AddProduction(Production({}));
-	R->AddProduction(Production({ b.get(), R.get() }));
-	Grammer grammer = Grammer(move(T));
-	grammer.AddNonTerminal(move(R));
-	grammer.AddTerminal(move(a));
-	grammer.AddTerminal(move(b));
-	grammer.AddTerminal(move(c));
-#endif
 #if (GRAMMER == 3)
 	Terminal a('a'), b('b');
 	NonTerminal *N = new NonTerminal(),
@@ -812,6 +765,7 @@ int main(int argc, char *argv[])
 	grammer.AddNonTerminal(pNonTerminal(B));
 	grammer.AddNonTerminal(pNonTerminal(C));
 #endif
+	Grammer grammer = Grammer::GetGrammer();
 	grammer.InitializeNullable();
 	grammer.InitializeFirst();
 	grammer.InitializeFollow();
@@ -832,6 +786,98 @@ int main(int argc, char *argv[])
 		std::cerr << msg << std::endl;
 	}
 }
+Grammer::Grammer() : dfa(nfa)
+{
+	pNonTerminal terminated(new NonTerminal("")), acceptor(new NonTerminal("", true));
+	pTerminal end(new Terminal("End"));
+	terminated->AddProduction({ acceptor.get(), end.get() });
+	nonTerminals.push_back(move(terminated));
+	nonTerminals.push_back(move(acceptor));
+	terminals.push_back(move(end));
+}
+Grammer Grammer::GetGrammer()
+{
+	Grammer grammer;
+	vector<vector<vector<string>>> productions;
+
+	while (true)
+	{
+		const NonTerminal *nonTerminal = nullptr;
+		std::string name;
+		std::cout << "Non-Terminal: ";
+		std::cin >> name;
+		if (name == "$")
+			break;
+		//for (const auto &nonTerm : grammer.nonTerminals)
+		size_t i;
+		for (i = 2; i < grammer.nonTerminals.size(); i++)
+		{
+			if (name == grammer.nonTerminals[i]->Name())
+			{
+				nonTerminal = grammer.nonTerminals[i].get();
+				break;
+			}
+		}
+		if (!nonTerminal)
+		{
+			grammer.nonTerminals.emplace_back(new NonTerminal(move(name)));
+			nonTerminal = grammer.nonTerminals.back().get();
+			productions.emplace_back();
+		}
+		std::cout << "\t-> ";
+		productions[i - 2].emplace_back();
+		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+		std::getline(std::cin, name);
+		string::const_iterator it = name.begin(), begin, end = name.end();
+		while (true)
+		{
+			while (it != end && std::isspace(*it))
+				it++;
+			if (it == end)
+				break;
+			begin = it;
+			while (it != end && !std::isspace(*it))
+				it++;
+			productions[i - 2].back().push_back(string(begin, it));
+		}
+	}
+	grammer.nonTerminals[1]->AddProduction({ grammer.nonTerminals[2].get() }); 
+	for (size_t i = 0; i < productions.size(); i++)
+	{
+		for (auto &production : productions[i])
+		{
+			std::vector<Symbol *> symbols(production.size(), nullptr);
+			for (size_t j = 0; j < production.size(); j++)
+			{
+				for (size_t k = 2; k < grammer.nonTerminals.size(); k++)
+				{
+					if (production[j] == grammer.nonTerminals[k]->Name())
+					{
+						symbols[j] = grammer.nonTerminals[k].get();
+						break;
+					}
+				}
+				if (symbols[j])
+					continue;
+				for (size_t k = 1; k < grammer.terminals.size(); k++)
+				{
+					if (production[j] == grammer.terminals[k]->Name())
+					{
+						symbols[j] = grammer.terminals[k].get();
+						break;
+					}
+				}
+				if (symbols[j])
+					continue;
+				grammer.terminals.emplace_back(new Terminal(move(production[j])));
+				symbols[j] = grammer.terminals.back().get();
+			}
+			grammer.nonTerminals[i + 2]->AddProduction(move(symbols));
+		}
+	}
+	return grammer;
+}
+
 
 vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
 {
@@ -1043,16 +1089,16 @@ void Grammer::InitializeFollow()
 }
 
 // Testing interface
-void NonTerminal::AddProduction(Production &&production)
+void NonTerminal::AddProduction(vector<Symbol *> &&production)
 {
-	productions.push_back(move(production));
+	productions.emplace_back(move(production));
 }
 Grammer::Grammer(pNonTerminal &&start) : dfa(nfa)
 {
 	pNonTerminal terminated(new NonTerminal("")), acceptor(new NonTerminal("", true));
 	pTerminal end(new Terminal("End"));
-	acceptor->AddProduction(Production({ start.get() }));
-	terminated->AddProduction(Production({ acceptor.get(), end.get() }));
+	acceptor->AddProduction({ start.get() });
+	terminated->AddProduction({ acceptor.get(), end.get() });
 	nonTerminals.push_back(move(terminated));
 	nonTerminals.push_back(move(acceptor));
 	terminals.push_back(move(end));
