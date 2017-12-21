@@ -7,7 +7,6 @@
 #include <vector>
 #include <cctype>
 
-#define GRAMMER		0
 #define EPSILON		nullptr
 
 // try to restrict access as much as possible
@@ -67,6 +66,7 @@ public:
 	size_t Size() const { return states.size(); }
 	vector<bool> &Closure(vector<bool> &subset) const;
 	vector<bool> Move(const vector<bool> &subset, const Symbol *symbol) const;
+	vector<size_t> ReductionStates() const;
 private:
 	void closureRecursion(size_t current, vector<bool> &checked, vector<bool> &subset) const;
 	vector<pState> states;
@@ -150,6 +150,7 @@ public:
 	void AddReductions(size_t state);
 	void AddNumber(size_t numState) { num = numState; };
 	std::vector<size_t> TransitionList(const Symbol *symbol) const;
+	bool Reducible() const { return nonTerminal ? true : false; }
 private:
 	struct Transition
 	{
@@ -159,7 +160,7 @@ private:
 	vector<Transition> transitions;
 	const NonTerminal *nonTerminal;
 	size_t production;
-	pReduce accepting;
+	//pReduce accepting;
 	size_t num;
 };
 class Grammer
@@ -170,7 +171,6 @@ public:
 	void InitializeFirst();
 	void InitializeFollow();
 	void GenerateDfa();
-	Grammer(pNonTerminal &&start);
 	void AddNonTerminal(pNonTerminal &&nonTerminal) { nonTerminals.push_back(move(nonTerminal)); }
 	void AddTerminal(pTerminal &&terminal) { terminals.push_back(move(terminal)); }
 
@@ -195,6 +195,7 @@ private:
 			size_t to;
 		};
 		vector<vector<Transition>> transitions;
+		vector<vector<size_t>> reductionStates;
 		rNFA nfa;
 	};
 	NFA nfa;
@@ -203,234 +204,216 @@ private:
 	vector<pNonTerminal> nonTerminals;
 	vector<pTerminal> terminals;
 };
-
-/*
-class DFA
+class Action
 {
 public:
-	DFA(const NFA &nfa);
-	DFA(const DFA &dfa);
-
-	void Print(ostream &out) const;
-private:
-	static bool isNonempty(const vector<bool> &subset);
-
-	struct StateInfo
-	{
-		vector<size_t> subset;
-		vector<size_t> transitions;
-	};
-	vector<StateInfo> stateInfo;
+	virtual ~Action() = 0 {}
+	virtual void PrintAction(ostream &os) const = 0;
+	virtual bool operator==(const Action &) const = 0;
+	virtual bool operator==(const Shift &) const = 0;
+	virtual bool operator==(const Reduce &) const = 0;
 };
-DFA::DFA(const NFA &nfa)
+class Shift : public Action
 {
-	vector<vector<bool>> states;
-	vector<bool> stateSet(nfa.Size(), false);
-	stateSet[0] = true;
-	states.push_back(move(nfa.Closure(stateSet)));
-	stateInfo.emplace_back();
-	stateInfo[0].accepting = nfa.Accepting(states[0]);
-	for (size_t stateIndex = 0; stateIndex < states.size(); stateIndex++)
-	{
-		for (size_t charIndex = 1; charIndex < NFA::AlphabetSize(); charIndex++)
-		{
-			stateSet = nfa.Move(states[stateIndex], charIndex);
-			if (isNonempty(stateSet))
-			{
-				for (size_t prevStateIndex = 0;; prevStateIndex++)
-				{
-					if (prevStateIndex == states.size())
-					{
-						states.push_back(move(stateSet));
-						stateInfo.emplace_back(StateInfo());
-						stateInfo[prevStateIndex].accepting = nfa.Accepting(states[prevStateIndex]);
-						stateInfo[stateIndex].transitions[charIndex] = prevStateIndex + 1;
-						break;
-					}
-					else if (stateSet == states[prevStateIndex])
-					{
-						stateInfo[stateIndex].transitions[charIndex] = prevStateIndex + 1;
-						break;
-					}
-}
-			}
-			else
-				stateInfo[stateIndex].transitions[charIndex] = 0;
-		}
-	}
-}
-DFA::DFA(const DFA &dfa)
+public:
+	Shift(size_t to) : to(to) {}
+	void PrintAction(ostream &os) const;
+	bool operator==(const Action &rhs) const { return rhs == *this; }
+	bool operator==(const Reduce &) const { return false; }
+	bool operator==(const Shift &rhs) const { return to == rhs.to; }
+private:
+	size_t to;
+};
+class Reduce : public Action
 {
-	struct transition
-	{
-		size_t fromOld, fromNew, to;
-		bool marked;
-	};
-	vector<size_t> states;
-	states.reserve(dfa.stateInfo.size());
-	size_t numStates = 1;
-	bool nonAccepting = false;
-	for (auto info : dfa.stateInfo)
-	{
-		if (!info.accepting)
-			nonAccepting = true;
-		if (info.accepting > numStates)
-			numStates = info.accepting;
-	}
-	if (nonAccepting)
-		numStates++;
-	size_t offset = numStates - dfa.stateInfo[0].accepting;
-	for (auto info : dfa.stateInfo)
-		states.push_back((info.accepting + offset) % numStates + 1);
-	bool consistent = false;
-	while (!consistent)
-	{
-		consistent = true;
-		for (size_t charIndex = 1; charIndex < NFA::AlphabetSize(); charIndex++)
-		{
-			vector<transition> transitions;
-			transitions.reserve(states.size());
-			vector<size_t> currentTransVals(numStates);
-			for (size_t dfaState = states.size(); dfaState-- > 0;)
-			{
-				size_t trans = (dfa.stateInfo[dfaState].transitions[charIndex] == 0) ?
-					0 : states[dfa.stateInfo[dfaState].transitions[charIndex] - 1];
-				currentTransVals[states[dfaState] - 1] = trans;
-				transitions.push_back({ dfaState, states[dfaState], trans });
-			}
-			for (size_t i = transitions.size(); i-- > 0;)
-			{
-				if (transitions[i].marked == false)
-				{
-					if (transitions[i].to != currentTransVals[transitions[i].fromNew - 1])
-					{
-						consistent = false;
-						states[transitions[i].fromOld] = ++numStates;
-						currentTransVals[transitions[i].fromNew - 1] = transitions[i].to; //experimental: num_states
-					}
-					for (size_t j = i; j-- > 0;)
-					{
-						if ((transitions[j].marked == false) && (transitions[j].fromNew == transitions[i].fromNew) &&
-							(transitions[j].to == currentTransVals[transitions[j].fromNew - 1]))
-						{
-							transitions[j].marked = true;
-							states[transitions[j].fromOld] = states[transitions[i].fromOld];
-						}
-					}
-				}
-			}
-		}
-	}
-	stateInfo = vector<StateInfo>(numStates);
-	for (size_t i = 0; i < states.size(); i++)
-	{
-		stateInfo[states[i] - 1].accepting = dfa.stateInfo[i].accepting;
-		for (size_t j = 1; j < NFA::AlphabetSize(); j++)
-			stateInfo[states[i] - 1].transitions[j] = (dfa.stateInfo[i].transitions[j] == 0) ? 0 : states[dfa.stateInfo[i].transitions[j] - 1];
-	}
-}
-*/
+public:
+	Reduce(const NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
+	void PrintAction(ostream &os) const;
+	bool operator==(const Action &rhs) const { return rhs == *this; }
+	bool operator==(const Shift &) const { return false; }
+	bool operator==(const Reduce &rhs) const { return (nonTerminal == rhs.nonTerminal) && (production == rhs.production); }
+private:
+	const NonTerminal *nonTerminal;
+	size_t production;
+};
 
-void Grammer::Print(ostream &os) const
+
+int main(int argc, char *argv[])
 {
-	os << "#include <iostream>\n"
-		"#include <memory>\n"
-		"#include <stack>\n"
-		"#include <string>\n"
-		"#include <vector>\n\n"
-		"using move;\n\n"
-		"class Symbol;\n";
-	for (size_t i = 2; i < nonTerminals.size(); i++)
-		os << "class " << nonTerminals[i]->Name() << ";\n";
-	os << "class Terminal;\n";
-	for (size_t i = 1; i < terminals.size(); i++)
-		os << "class " << terminals[i]->Name() << ";\n";
-	os << "\ntypedef std::unique_ptr<Symbol> pSymbol;\n";
-	for (size_t i = 2; i < nonTerminals.size(); i++)
-		os << "typedef std::unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
-	os << "typedef std::unique_ptr<Terminal> pTerminal;\n";
-	for (size_t i = 1; i < terminals.size(); i++)
-		os << "typedef std::unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
-	os << "typedef std::stack<size_t, vector<size_t>> Stack;\n"
-		"typedef std::stack<pSymbol, vector<pSymbol>> SymStack;\n\n"
-		"template<typename Dest, typename Source>\n"
-		"std::unique_ptr<Dest> pCast(std::unique_ptr<Source> &&src)\n"
-		"{\n"
-		"\treturn std::unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
-		"}\n\n"
-		"class Parser\n"
-		"{\n"
-		"public:\n"
-		"\tParser(vector<pTerminal> &&in) : input(move(in)) {}\n"
-		"\tbool CreateTree();\n"
-		"\tpT GetTree() { return move(tree); };\n\n"
-		"\tstruct Error\n"
-		"\t{\n"
-		"\t\tstring Location;\n"
-		"\t\tstring Message;\n"
-		"\t};\n"
-		"\tError GetErrorReport() { return move(err); }\n"
-		"private:\n"
-		"\tpT tree;\n"
-		"\tvector<pTerminal> input;\n"
-		"\tError err;\n"
-		"};\n\n"
-		"class Symbol\n"
-		"{\n"
-		"public:\n"
-		"\tvirtual ~Symbol() = 0 {}\n"
-		"};\n";
-	for (size_t i = 2; i < nonTerminals.size(); i++)
-		nonTerminals[i]->PrintClass(os);
-	os << "class Terminal : public Symbol \n"
-		"{\n"
-		"public:\n"
-		"\tvirtual ~Terminal() = 0 {}\n"
-		"\tvirtual bool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const = 0;\n"
-		"};\n";
-	for (size_t i = 1; i < terminals.size(); i++)
-		os << "class " << terminals[i]->Name() << " : public Terminal\n"
-			"{\n"
-			"public:\n"
-			"\t~" << terminals[i]->Name() << "() = default;\n"
-			"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const;\n"
-			"};\n";
-	os << "namespace End \n"
-		"{\n"
-		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
-		"}\n\n\n\n"
-		"bool Parser::CreateTree()\n"
-		"{\n"
-		"\tStack stack;\n"
-		"\tSymStack symStack;\n"
-		"\tstack.push(0);\n"
-		"\tfor (auto &symbol : input)\n"
-		"\t{\n"
-		"\t\tif (!symbol->Process(stack, symStack, err))\n"
-		"\t\t\treturn false;\n"
-		"\t\tsymStack.push(move(symbol));\n"
-		"\t}\n"
-		"\tif (!End::Process(stack, symStack, err))\n"
-		"\t\treturn false;\n"
-		"\ttree = pCast<T>(move(symStack.top()));\n"
-		"\treturn true;\n"
-		"}";
-	for (size_t i = 2; i < nonTerminals.size(); i++)
-		nonTerminals[i]->PrintActions(os);
-	for (size_t i = 1; i < terminals.size(); i++)
-		terminals[i]->PrintActions(os);
-	terminals[0]->PrintActions(os);
+	if (argc != 2)
+	{
+		std::cerr << "Improper number of arguments entered!" << std::endl;
+		return 1;
+	}
+/*
+	Terminal a('a'), b('b');
+	NonTerminal *N = new NonTerminal(),
+				*A = new NonTerminal(),
+				*B = new NonTerminal(),
+				*C = new NonTerminal();
+	N->AddProduction(Production({ A, B }));
+	N->AddProduction(Production({ B, A }));
+	A->AddProduction(Production({ &a }));
+	A->AddProduction(Production({ C, A, C }));
+	B->AddProduction(Production({ &b }));
+	B->AddProduction(Production({ C, B, C }));
+	C->AddProduction(Production({ &a }));
+	C->AddProduction(Production({ &b }));
+	Grammer grammer = Grammer(pNonTerminal(N));
+	grammer.AddNonTerminal(pNonTerminal(A));
+	grammer.AddNonTerminal(pNonTerminal(B));
+	grammer.AddNonTerminal(pNonTerminal(C));
+*/
+	Grammer grammer = Grammer::GetGrammer();
+	grammer.InitializeNullable();
+	grammer.InitializeFirst();
+	grammer.InitializeFollow();
+	grammer.GenerateDfa();
+	
+	try
+	{
+		std::ofstream os(argv[1]);
+		if (os.fail())
+		{
+			std::cerr << "Failed to open file!" << std::endl;
+			return 1;
+		}
+		grammer.Print(os);
+	}
+	catch (char *msg)
+	{
+		std::cerr << msg << std::endl;
+	}
+	system("pause");
 }
-void NonTerminal::PrintClass(ostream &os) const
+
+vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
 {
-	os << "class " << name << " : public Symbol\n"
-		"{\n"
-		"public:\n"
-		"\tvirtual ~" << name << "() = 0 {}\n"
-		"\tstatic bool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
-		"};\n";
-	for (size_t i = 0; i < productions.size(); i++)
-		productions[i].PrintClass(os, name, i + 1);
+	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
+	vector<Terminal *> result;
+	result.reserve(sizeA + sizeB);
+	while (true)
+	{
+		if (iA == sizeA)
+		{
+			while (iB < sizeB)
+				result.push_back(setB[iB++]);
+			return result;
+		}
+		if (iB == sizeB)
+		{
+			while (iA < sizeA)
+				result.push_back(setA[iA++]);
+			return result;
+		}
+
+		if (setA[iA] < setB[iB])
+			result.push_back(setA[iA++]);
+		else if (setB[iB] < setA[iA])
+			result.push_back(setB[iB++]);
+		else
+			result.push_back(setA[++iB, iA++]);
+	}
+}
+
+void NFA::AddReductions(size_t nfaState, size_t dfaState)
+{
+	states[nfaState]->AddReductions(dfaState);
+}
+vector<bool> &NFA::Closure(vector<bool> &subset) const
+{
+	vector<bool> checked(subset.size(), false);
+	for (size_t i = 0; i < subset.size(); i++)
+		if (subset[i])
+			closureRecursion(i, checked, subset);
+	return subset;
+}
+void NFA::closureRecursion(size_t current, vector<bool> &checked, vector<bool> &subset) const
+{
+	if (!checked[current])
+	{
+		checked[current] = true;
+		subset[current] = true;
+		for (auto tran : states[current]->TransitionList(EPSILON))
+			closureRecursion(tran, checked, subset);
+	}
+}
+void NFA::Initialize(Production &production, const NonTerminal *nonTerminal, size_t productionNum)
+{
+	const size_t size = production.Size();
+	states.reserve(size + 1);
+	for (size_t i = 0; i < size; i++)
+		states.push_back(pState(new State));
+	states.push_back(pState(new State(nonTerminal, productionNum)));
+	for (size_t i = 0; i < size; i++)
+	{
+		states[i]->AddTransition(production[i], states[i + 1].get());
+		vector<const State *> roots = production[i]->NfaRoots();
+		for (const auto &root : roots)
+			states[i]->AddTransition(EPSILON, root);
+	}
+}
+NFA NFA::Merge(vector<vector<NFA>> &&nfas)
+{
+	size_t size = 0;
+	for (auto &vector : nfas)
+		for (auto &nfa : vector)
+			size += nfa.states.size();
+	NFA result;
+	result.states.reserve(size);
+	for (auto &vector : nfas)
+		for (auto &nfa : vector)
+			result.states.insert(result.states.end(), std::make_move_iterator(nfa.states.begin()), std::make_move_iterator(nfa.states.end()));
+	for (size_t i = 0; i < result.states.size(); i++)
+		result.states[i]->AddNumber(i);																			// check if this is right
+	return result;
+}
+vector<bool> NFA::Move(const vector<bool> &subset, const Symbol *symbol) const
+{
+	vector<bool> result(states.size(), false);
+	for (size_t i = 0; i < subset.size(); i++)
+		if (subset[i])
+			for (auto tran : states[i]->TransitionList(symbol))
+				result[tran] = true;
+	return Closure(result);
+}
+vector<size_t> NFA::ReductionStates() const
+{
+	vector<size_t> result;
+	for (size_t i = 0; i < states.size(); i++)
+		if (states[i]->Reducible())
+			result.push_back(i);
+	return result;
+}
+
+vector<Terminal *> Production::ComputeFirst() const
+{
+	vector<Terminal *> result;
+	for (auto symbol : symbols)
+	{
+		result = SetUnion(result, symbol->First());
+		if (!symbol->Nullable())
+			break;
+	}
+	return result;
+}
+bool Production::ComputeNullable() const
+{
+	for (auto symbol : symbols)
+		if (!symbol->Nullable())
+			return false;
+	return true;
+}
+void Production::FollowConstraints(const NonTerminal *lhs) const
+{
+	for (vector<Symbol *>::const_iterator it = symbols.begin(); it != symbols.end(); it++)
+		(*it)->ExtractFollowConstraints(lhs, it + 1, symbols.end());
+}
+const State *Production::GetRoot(const NonTerminal *nonTerminal, size_t production)
+{
+	if (nfa.Empty())
+		nfa.Initialize(*this, nonTerminal, production);
+	return nfa.GetRoot();
 }
 void Production::PrintClass(ostream &os, const string name, size_t num) const
 {
@@ -468,234 +451,6 @@ void Production::PrintClass(ostream &os, const string name, size_t num) const
 		os << "\tconst p" << symbols[i]->Name() << " symbol_" << i + 1 << ";\n";	// should this be a const here?
 	os << "};\n";
 }
-
-class Action
-{
-public:
-	virtual ~Action() = 0 {}
-	virtual void PrintAction(ostream &os) const = 0;
-	virtual bool operator==(const Action &) const = 0;
-	virtual bool operator==(const Shift &) const = 0;
-	virtual bool operator==(const Reduce &) const = 0;
-};
-class Shift : public Action
-{
-public:
-	Shift(size_t to) : to(to) {}
-	void PrintAction(ostream &os) const;
-	bool operator==(const Action &rhs) const { return rhs == *this; }
-	bool operator==(const Reduce &) const { return false; }
-	bool operator==(const Shift &rhs) const { return to == rhs.to; }
-private:
-	size_t to;
-};
-class Reduce : public Action
-{
-public:
-	Reduce(const NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
-	void PrintAction(ostream &os) const;
-	bool operator==(const Action &rhs) const { return rhs == *this; }
-	bool operator==(const Shift &) const { return false; }
-	bool operator==(const Reduce &rhs) const { return (nonTerminal == rhs.nonTerminal) && (production == rhs.production); }
-private:
-	const NonTerminal *nonTerminal;
-	size_t production;
-};
-
-bool Grammer::DFA::isNonempty(const vector<bool> &subset)
-{
-	for (auto element : subset)
-		if (element == true)
-			return true;
-	return false;
-}
-vector<bool> NFA::Move(const vector<bool> &subset, const Symbol *symbol) const
-{
-	vector<bool> result(states.size(), false);
-	for (size_t i = 0; i < subset.size(); i++)
-		if (subset[i])
-			for (auto tran : states[i]->TransitionList(symbol))
-				result[tran] = true;
-	return Closure(result);
-}
-std::vector<size_t> State::TransitionList(const Symbol *symbol) const
-{
-	vector<size_t> result;
-	result.reserve(transitions.size());
-	for (auto transition : transitions)
-		if (transition.symbol == symbol)
-			result.push_back(transition.to->num);
-	return result;
-}
-vector<bool> &NFA::Closure(vector<bool> &subset) const
-{
-	vector<bool> checked(subset.size(), false);
-	for (size_t i = 0; i < subset.size(); i++)
-		if (subset[i])
-			closureRecursion(i, checked, subset);
-	return subset;
-}
-void NFA::closureRecursion(size_t current, vector<bool> &checked, vector<bool> &subset) const
-{
-	if (!checked[current])
-	{
-		checked[current] = true;
-		subset[current] = true;
-		for (auto tran : states[current]->TransitionList(EPSILON))
-			closureRecursion(tran, checked, subset);
-	}
-}
-Grammer::DFA Grammer::DFA::Generate(NFA &nfa, const Grammer &grammer)  /// note uses true state numbers (instead of state + 1)
-{
-	DFA dfa(nfa);
-	vector<bool> stateSet(nfa.Size(), false);
-	stateSet[0] = true;
-	dfa.states.push_back(move(nfa.Closure(stateSet)));
-	dfa.transitions.emplace_back();
-	for (size_t stateIndex = 0; stateIndex < dfa.states.size(); stateIndex++)
-	{
-		bool terminalSet = true;
-		size_t index = 0;
-		Symbol *symbol;
-		while (true)
-		{
-			if (terminalSet)
-			{
-				if (index == grammer.terminals.size())
-				{
-					index = 2;
-					terminalSet = false;
-					continue;
-				}
-				symbol = grammer.terminals[index].get();
-			}
-			else
-			{
-				if (index == grammer.nonTerminals.size())
-					break;
-				symbol = grammer.nonTerminals[index].get();
-			}		
-			stateSet = nfa.Move(dfa.states[stateIndex], symbol); /// the states of course can overlap so dfa.states is not a valid representation.
-			if (isNonempty(stateSet))
-			{
-				for (size_t prevStateIndex = 0;; prevStateIndex++)
-				{
-					if (prevStateIndex == dfa.states.size())
-					{
-						dfa.states.push_back(move(stateSet));
-						dfa.transitions.emplace_back();
-						dfa.transitions[stateIndex].push_back({ symbol, prevStateIndex });
-						break;
-					}
-					else if (stateSet == dfa.states[prevStateIndex])
-					{
-						dfa.transitions[stateIndex].push_back({ symbol, prevStateIndex });
-						break;
-					}
-				}
-			}
-			index++;
-		}
-	}
-	return dfa;
-}
-
-void Grammer::DFA::CreateActions(Grammer &grammer) const // shuld this be a reference member
-{
-	for (auto &nonTerminal : grammer.nonTerminals)
-		nonTerminal->PrepareGos(transitions.size());
-	for (auto &terminal : grammer.terminals)
-		terminal->PrepareActions(transitions.size());
-	for (size_t i = 0; i < transitions.size(); i++)
-		for (auto &transition : transitions[i])
-			transition.on->AddShiftGo(i, transition.to);
-	for (size_t i = 0; i < states.size(); i++)
-		for (size_t j = 0; j < states[0].size(); j++)
-			if (states[i][j])
-				nfa.get().AddReductions(j, i);
-}
-void State::AddReductions(size_t state)
-{
-	if (nonTerminal)
-	{
-		for (auto terminal : nonTerminal->Follow())
-			terminal->AddReductions(state, pReduce(new Reduce(nonTerminal, production)));
-	}
-}
-void NFA::AddReductions(size_t nfaState, size_t dfaState)
-{
-	states[nfaState]->AddReductions(dfaState);
-}
-void Terminal::AddShiftGo(size_t from, size_t to)
-{
-	actions[from] = pAction(new Shift(to));
-}
-void Terminal::AddReductions(size_t from, pReduce &&reduce)
-{
-	actions[from] = move(reduce);
-}
-
-void Terminal::PrintActions(ostream &os) const
-{
-	os << "\nbool " << name << "::Process(Stack &stack, SymStack &symStack, Parser::Error &err) const\n"
-		"{\n"
-		"\tswitch (stack.top())\n"
-		"\t{\n";
-	vector<bool> marked(actions.size(), false);
-	for (size_t i = 0; i < actions.size(); i++)
-	{
-		if (!actions[i] || marked[i])
-			continue;
-		for (size_t j = i; j < actions.size(); j++)
-		{
-			if (actions[j] && !marked[j] && (*actions[i] == *actions[j]))
-			{
-				marked[j] = true;
-				os << "\tcase " << j << ":\n";
-			}
-		}
-		actions[i]->PrintAction(os);
-	}
-	os << "\tdefault:\n"
-		"\t\terr = { \"" << name << "::Process\", \"Syntax Error!\" };\n"
-		"\t\treturn false;\n"
-		"\t}\n"
-		"\treturn true;\n"
-		"}";
-}
-void Shift::PrintAction(ostream &os) const
-{
-	os << "\t\tstack.push(" << to << ");\n"
-		"\t\tbreak;\n";
-}
-void Reduce::PrintAction(ostream &os) const
-{
-	nonTerminal->PrintReduce(os, production);
-}
-void NonTerminal::PrintReduce(ostream &os, size_t production) const
-{
-	if (acceptor)
-	{
-		os << "\t\treturn true;\n";
-		return;
-	}
-	size_t numSymbols = productions[production].PrintReduce(os);
-	os << "\t\tsymStack.emplace(new " << name << production + 1 << '(';
-	if (numSymbols)
-	{
-		for (size_t i = 1;; i++)
-		{
-			os << "move(sym" << i << ')';
-			if (i == numSymbols)
-				break;
-			os << ", ";
-		}
-	}
-	os << "));\n"
-		"\t\treturn " << name << "::Process(stack, symStack, err) && Process(stack, symStack, err);\n";
-	if (numSymbols)
-		os << "\t}\n";
-}
 size_t Production::PrintReduce(ostream &os) const
 {
 	if (!symbols.empty())
@@ -708,6 +463,67 @@ size_t Production::PrintReduce(ostream &os) const
 			"\t\tsymStack.pop();\n";
 	}
 	return symbols.size();
+}
+
+void NonTerminal::AddProduction(vector<Symbol *> &&production)
+{
+	productions.emplace_back(move(production));
+}
+void NonTerminal::ExtractFollowConstraints(const NonTerminal *lhs, vector<Symbol *>::const_iterator it, vector<Symbol *>::const_iterator end)
+{
+	for (; it != end; it++)
+	{
+		follow = SetUnion(follow, (*it)->First());
+		if (!(*it)->Nullable())
+			break;
+	}
+	if (it == end)
+		followConstraints.push_back(lhs);
+}
+bool NonTerminal::FirstSetup()
+{
+	vector<Terminal *> result;
+	for (const auto &production : productions)
+		result = SetUnion(result, production.ComputeFirst());
+	if (result.size() == first.size())
+		return true;
+	first = move(result);
+	return false;
+}
+vector<NFA> NonTerminal::GetBranches()
+{
+	vector<NFA> branches;
+	branches.reserve(productions.size());
+	for (auto &production : productions)
+		branches.push_back(production.MoveNfa());
+	return branches;
+}
+void NonTerminal::MergeFollowConstraints()
+{
+	std::sort(followConstraints.begin(), followConstraints.end());
+	followConstraints.erase(std::unique(followConstraints.begin(), followConstraints.end()), followConstraints.end());
+}
+vector<const State *> NonTerminal::NfaRoots()
+{
+	vector<const State *> branches;
+	branches.reserve(productions.size());
+	for (size_t i = 0; i < productions.size(); i++)
+		branches.push_back(productions[i].GetRoot(this, i));
+	return branches;
+}
+bool NonTerminal::NullableSetup()
+{
+	if (nullable)
+		return true;
+	for (const auto &production : productions)
+	{
+		if (production.ComputeNullable())
+		{
+			nullable = true;
+			return false;
+		}
+	}
+	return true;
 }
 void NonTerminal::PrintActions(ostream &os) const
 {
@@ -738,62 +554,150 @@ void NonTerminal::PrintActions(ostream &os) const
 		"\treturn true;\n"
 		"}";
 }
-
-int main(int argc, char *argv[])
+void NonTerminal::PrintClass(ostream &os) const
 {
-	if (argc != 2)
+	os << "class " << name << " : public Symbol\n"
+		"{\n"
+		"public:\n"
+		"\tvirtual ~" << name << "() = 0 {}\n"
+		"\tstatic bool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
+		"};\n";
+	for (size_t i = 0; i < productions.size(); i++)
+		productions[i].PrintClass(os, name, i + 1);
+}
+void NonTerminal::PrintReduce(ostream &os, size_t production) const
+{
+	if (acceptor)
 	{
-		std::cerr << "Improper number of arguments entered!" << std::endl;
-		return 1;
+		os << "\t\treturn true;\n";
+		return;
 	}
-#if (GRAMMER == 3)
-	Terminal a('a'), b('b');
-	NonTerminal *N = new NonTerminal(),
-				*A = new NonTerminal(),
-				*B = new NonTerminal(),
-				*C = new NonTerminal();
-	N->AddProduction(Production({ A, B }));
-	N->AddProduction(Production({ B, A }));
-	A->AddProduction(Production({ &a }));
-	A->AddProduction(Production({ C, A, C }));
-	B->AddProduction(Production({ &b }));
-	B->AddProduction(Production({ C, B, C }));
-	C->AddProduction(Production({ &a }));
-	C->AddProduction(Production({ &b }));
-	Grammer grammer = Grammer(pNonTerminal(N));
-	grammer.AddNonTerminal(pNonTerminal(A));
-	grammer.AddNonTerminal(pNonTerminal(B));
-	grammer.AddNonTerminal(pNonTerminal(C));
-#endif
-	Grammer grammer = Grammer::GetGrammer();
-	grammer.InitializeNullable();
-	grammer.InitializeFirst();
-	grammer.InitializeFollow();
-	grammer.GenerateDfa();
-	
-	try
+	size_t numSymbols = productions[production].PrintReduce(os);
+	os << "\t\tsymStack.emplace(new " << name << production + 1 << '(';
+	if (numSymbols)
 	{
-		std::ofstream os(argv[1]);
-		if (os.fail())
+		for (size_t i = 1;; i++)
 		{
-			std::cerr << "Failed to open file!" << std::endl;
-			return 1;
+			os << "move(sym" << i << ')';
+			if (i == numSymbols)
+				break;
+			os << ", ";
 		}
-		grammer.Print(os);
 	}
-	catch (char *msg)
+	os << "));\n"
+		"\t\treturn " << name << "::Process(stack, symStack, err) && Process(stack, symStack, err);\n";
+	if (numSymbols)
+		os << "\t}\n";
+}
+bool NonTerminal::SatisfyFollowConstraints()
+{
+	vector<Terminal *> result = follow;
+	for (auto nonTerminal : followConstraints)
+		result = SetUnion(result, nonTerminal->Follow());
+	if (result.size() == follow.size())
+		return true;
+	follow = move(result);
+	return false;
+}
+void NonTerminal::SetupFollowConstraints() const
+{
+	for (auto &production : productions)
+		production.FollowConstraints(this);
+}
+
+void Terminal::AddReductions(size_t from, pReduce &&reduce)
+{
+	if (!actions[from])
+		std::cerr << "Invalid Grammer!" << std::endl;
+	actions[from] = move(reduce);
+}
+void Terminal::AddShiftGo(size_t from, size_t to)
+{
+	actions[from] = pAction(new Shift(to));
+}
+void Terminal::PrintActions(ostream &os) const
+{
+	os << "\nbool " << name << "::Process(Stack &stack, SymStack &symStack, Parser::Error &err) const\n"
+		"{\n"
+		"\tswitch (stack.top())\n"
+		"\t{\n";
+	vector<bool> marked(actions.size(), false);
+	for (size_t i = 0; i < actions.size(); i++)
 	{
-		std::cerr << msg << std::endl;
+		if (!actions[i] || marked[i])
+			continue;
+		for (size_t j = i; j < actions.size(); j++)
+		{
+			if (actions[j] && !marked[j] && (*actions[i] == *actions[j]))
+			{
+				marked[j] = true;
+				os << "\tcase " << j << ":\n";
+			}
+		}
+		actions[i]->PrintAction(os);
+	}
+	os << "\tdefault:\n"
+		"\t\terr = { \"" << name << "::Process\", \"Syntax Error!\" };\n"
+		"\t\treturn false;\n"
+		"\t}\n"
+		"\treturn true;\n"
+		"}";
+}
+
+void State::AddReductions(size_t state)
+{
+	if (nonTerminal)
+	{
+		for (auto terminal : nonTerminal->Follow())
+			terminal->AddReductions(state, pReduce(new Reduce(nonTerminal, production)));
 	}
 }
-Grammer::Grammer() : dfa(nfa)
+std::vector<size_t> State::TransitionList(const Symbol *symbol) const
 {
-	pNonTerminal terminated(new NonTerminal("")), acceptor(new NonTerminal("", true));
-	pTerminal end(new Terminal("End"));
-	terminated->AddProduction({ acceptor.get(), end.get() });
-	nonTerminals.push_back(move(terminated));
-	nonTerminals.push_back(move(acceptor));
-	terminals.push_back(move(end));
+	vector<size_t> result;
+	result.reserve(transitions.size());
+	for (auto transition : transitions)
+		if (transition.symbol == symbol)
+			result.push_back(transition.to->num);
+	return result;
+}
+
+void Grammer::InitializeFirst()
+{
+	bool valid = false;
+	while (!valid)
+	{
+		valid = true;
+		for (auto &nonTerminal : nonTerminals)
+			if (!nonTerminal->FirstSetup())
+				valid = false;
+	}
+}
+void Grammer::InitializeFollow()
+{
+	for (const auto &nonTerminal : nonTerminals)
+		nonTerminal->SetupFollowConstraints();
+	for (auto &nonTerminal : nonTerminals)
+		nonTerminal->MergeFollowConstraints();
+	bool valid = false;
+	while (!valid)
+	{
+		valid = true;
+		for (auto &nonTerminal : nonTerminals)
+			if (!nonTerminal->SatisfyFollowConstraints())
+				valid = false;
+	}
+}
+void Grammer::InitializeNullable()
+{
+	bool valid = false;
+	while (!valid)
+	{
+		valid = true;
+		for (auto &nonTerminal : nonTerminals)
+			if (!nonTerminal->NullableSetup())
+				valid = false;
+	}
 }
 Grammer Grammer::GetGrammer()
 {
@@ -877,67 +781,6 @@ Grammer Grammer::GetGrammer()
 	}
 	return grammer;
 }
-
-
-vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
-{
-	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
-	vector<Terminal *> result;
-	result.reserve(sizeA + sizeB);
-	while (true)
-	{
-		if (iA == sizeA)
-		{
-			while (iB < sizeB)
-				result.push_back(setB[iB++]);
-			return result;
-		}
-		if (iB == sizeB)
-		{
-			while (iA < sizeA)
-				result.push_back(setA[iA++]);
-			return result;
-		}
-
-		if (setA[iA] < setB[iB])
-			result.push_back(setA[iA++]);
-		else if (setB[iB] < setA[iA])
-			result.push_back(setB[iB++]);
-		else
-			result.push_back(setA[++iB, iA++]);
-	}
-}
-
-NFA NFA::Merge(vector<vector<NFA>> &&nfas)
-{
-	size_t size = 0;
-	for (auto &vector : nfas)
-		for (auto &nfa : vector)
-			size += nfa.states.size();
-	NFA result;
-	result.states.reserve(size);
-	for (auto &vector : nfas)
-		for (auto &nfa : vector)
-			result.states.insert(result.states.end(), std::make_move_iterator(nfa.states.begin()), std::make_move_iterator(nfa.states.end()));
-	for (size_t i = 0; i < result.states.size(); i++)
-		result.states[i]->AddNumber(i);																			// check if this is right
-	return result;
-}
-void NFA::Initialize(Production &production, const NonTerminal *nonTerminal, size_t productionNum)
-{
-	const size_t size = production.Size();
-	states.reserve(size + 1);
-	for (size_t i = 0; i < size; i++)
-		states.push_back(pState(new State));
-	states.push_back(pState(new State(nonTerminal, productionNum)));
-	for (size_t i = 0; i < size; i++)
-	{
-		states[i]->AddTransition(production[i], states[i + 1].get());
-		vector<const State *> roots = production[i]->NfaRoots();
-		for (const auto &root : roots)
-			states[i]->AddTransition(EPSILON, root);
-	}
-}
 void Grammer::GenerateDfa()
 {
 	nonTerminals[0]->StartNfa();
@@ -948,159 +791,291 @@ void Grammer::GenerateDfa()
 	nfa = NFA::Merge(move(nfas));
 
 	dfa = DFA::Generate(nfa, *this);
+	DFA::Optimize(dfa);
 	dfa.CreateActions(*this);
 }
-bool NonTerminal::NullableSetup()
-{
-	if (nullable)
-		return true;
-	for (const auto &production : productions)
-	{
-		if (production.ComputeNullable())
-		{
-			nullable = true;
-			return false;
-		}
-	}
-	return true;
-}
-bool NonTerminal::FirstSetup()
-{
-	vector<Terminal *> result;
-	for (const auto &production : productions)
-		result = SetUnion(result, production.ComputeFirst());
-	if (result.size() == first.size())
-		return true;
-	first = move(result);
-	return false;
-}
-void NonTerminal::ExtractFollowConstraints(const NonTerminal *lhs, vector<Symbol *>::const_iterator it, vector<Symbol *>::const_iterator end)
-{
-	for (; it != end; it++)
-	{
-		follow = SetUnion(follow, (*it)->First());
-		if (!(*it)->Nullable())
-			break;
-	}
-	if (it == end)
-		followConstraints.push_back(lhs);
-}
-void NonTerminal::SetupFollowConstraints() const
-{
-	for (auto &production : productions)
-		production.FollowConstraints(this);
-}
-void NonTerminal::MergeFollowConstraints()
-{
-	std::sort(followConstraints.begin(), followConstraints.end());
-	followConstraints.erase(std::unique(followConstraints.begin(), followConstraints.end()), followConstraints.end());
-}
-bool NonTerminal::SatisfyFollowConstraints()
-{
-	vector<Terminal *> result = follow;
-	for (auto nonTerminal : followConstraints)
-		result = SetUnion(result, nonTerminal->Follow());
-	if (result.size() == follow.size())
-		return true;
-	follow = move(result);
-	return false;
-}
-vector<const State *> NonTerminal::NfaRoots()
-{
-	vector<const State *> branches;
-	branches.reserve(productions.size());
-	for (size_t i = 0; i < productions.size(); i++)
-		branches.push_back(productions[i].GetRoot(this, i));
-	return branches;
-}
-vector<NFA> NonTerminal::GetBranches()
-{
-	vector<NFA> branches;
-	branches.reserve(productions.size());
-	for (auto &production : productions)
-		branches.push_back(production.MoveNfa());
-	return branches;
-}
-bool Production::ComputeNullable() const
-{
-	for (auto symbol : symbols)
-		if (!symbol->Nullable())
-			return false;
-	return true;
-}
-void Production::FollowConstraints(const NonTerminal *lhs) const
-{
-	for (vector<Symbol *>::const_iterator it = symbols.begin(); it != symbols.end(); it++)
-		(*it)->ExtractFollowConstraints(lhs, it + 1, symbols.end());
-}
-const State *Production::GetRoot(const NonTerminal *nonTerminal, size_t production)
-{
-	if (nfa.Empty())
-		nfa.Initialize(*this, nonTerminal, production);
-	return nfa.GetRoot();
-}
-vector<Terminal *> Production::ComputeFirst() const
-{
-	vector<Terminal *> result;
-	for (auto symbol : symbols)
-	{
-		result = SetUnion(result, symbol->First());
-		if (!symbol->Nullable())
-			break;
-	}
-	return result;
-}
-void Grammer::InitializeNullable()
-{
-	bool valid = false;
-	while (!valid)
-	{
-		valid = true;
-		for (auto &nonTerminal : nonTerminals)
-			if (!nonTerminal->NullableSetup())
-				valid = false;
-	}
-}
-void Grammer::InitializeFirst()
-{
-	bool valid = false;
-	while (!valid)
-	{
-		valid = true;
-		for (auto &nonTerminal : nonTerminals)
-			if (!nonTerminal->FirstSetup())
-				valid = false;
-	}
-}
-void Grammer::InitializeFollow()
-{
-	for (const auto &nonTerminal : nonTerminals)
-		nonTerminal->SetupFollowConstraints();
-	for (auto &nonTerminal : nonTerminals)
-		nonTerminal->MergeFollowConstraints();
-	bool valid = false;
-	while (!valid)
-	{
-		valid = true;
-		for (auto &nonTerminal : nonTerminals)
-			if (!nonTerminal->SatisfyFollowConstraints())
-				valid = false;
-	}
-}
-
-// Testing interface
-void NonTerminal::AddProduction(vector<Symbol *> &&production)
-{
-	productions.emplace_back(move(production));
-}
-Grammer::Grammer(pNonTerminal &&start) : dfa(nfa)
+Grammer::Grammer() : dfa(nfa)
 {
 	pNonTerminal terminated(new NonTerminal("")), acceptor(new NonTerminal("", true));
 	pTerminal end(new Terminal("End"));
-	acceptor->AddProduction({ start.get() });
 	terminated->AddProduction({ acceptor.get(), end.get() });
 	nonTerminals.push_back(move(terminated));
 	nonTerminals.push_back(move(acceptor));
 	terminals.push_back(move(end));
-	nonTerminals.push_back(move(start));
+}
+void Grammer::Print(ostream &os) const
+{
+	os << "#include <iostream>\n"
+		"#include <memory>\n"
+		"#include <stack>\n"
+		"#include <string>\n"
+		"#include <vector>\n\n"
+		"using move;\n\n"
+		"class Symbol;\n";
+	for (size_t i = 2; i < nonTerminals.size(); i++)
+		os << "class " << nonTerminals[i]->Name() << ";\n";
+	os << "class Terminal;\n";
+	for (size_t i = 1; i < terminals.size(); i++)
+		os << "class " << terminals[i]->Name() << ";\n";
+	os << "\ntypedef std::unique_ptr<Symbol> pSymbol;\n";
+	for (size_t i = 2; i < nonTerminals.size(); i++)
+		os << "typedef std::unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
+	os << "typedef std::unique_ptr<Terminal> pTerminal;\n";
+	for (size_t i = 1; i < terminals.size(); i++)
+		os << "typedef std::unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
+	os << "typedef std::stack<size_t, vector<size_t>> Stack;\n"
+		"typedef std::stack<pSymbol, vector<pSymbol>> SymStack;\n\n"
+		"template<typename Dest, typename Source>\n"
+		"std::unique_ptr<Dest> pCast(std::unique_ptr<Source> &&src)\n"
+		"{\n"
+		"\treturn std::unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
+		"}\n\n"
+		"class Parser\n"
+		"{\n"
+		"public:\n"
+		"\tParser(vector<pTerminal> &&in) : input(move(in)) {}\n"
+		"\tbool CreateTree();\n"
+		"\tpT GetTree() { return move(tree); };\n\n"
+		"\tstruct Error\n"
+		"\t{\n"
+		"\t\tstring Location;\n"
+		"\t\tstring Message;\n"
+		"\t};\n"
+		"\tError GetErrorReport() { return move(err); }\n"
+		"private:\n"
+		"\tpT tree;\n"
+		"\tvector<pTerminal> input;\n"
+		"\tError err;\n"
+		"};\n\n"
+		"class Symbol\n"
+		"{\n"
+		"public:\n"
+		"\tvirtual ~Symbol() = 0 {}\n"
+		"};\n";
+	for (size_t i = 2; i < nonTerminals.size(); i++)
+		nonTerminals[i]->PrintClass(os);
+	os << "class Terminal : public Symbol \n"
+		"{\n"
+		"public:\n"
+		"\tvirtual ~Terminal() = 0 {}\n"
+		"\tvirtual bool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const = 0;\n"
+		"};\n";
+	for (size_t i = 1; i < terminals.size(); i++)
+		os << "class " << terminals[i]->Name() << " : public Terminal\n"
+		"{\n"
+		"public:\n"
+		"\t~" << terminals[i]->Name() << "() = default;\n"
+		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const;\n"
+		"};\n";
+	os << "namespace End \n"
+		"{\n"
+		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
+		"}\n\n\n\n"
+		"bool Parser::CreateTree()\n"
+		"{\n"
+		"\tStack stack;\n"
+		"\tSymStack symStack;\n"
+		"\tstack.push(0);\n"
+		"\tfor (auto &symbol : input)\n"
+		"\t{\n"
+		"\t\tif (!symbol->Process(stack, symStack, err))\n"
+		"\t\t\treturn false;\n"
+		"\t\tsymStack.push(move(symbol));\n"
+		"\t}\n"
+		"\tif (!End::Process(stack, symStack, err))\n"
+		"\t\treturn false;\n"
+		"\ttree = pCast<T>(move(symStack.top()));\n"
+		"\treturn true;\n"
+		"}";
+	for (size_t i = 2; i < nonTerminals.size(); i++)
+		nonTerminals[i]->PrintActions(os);
+	for (size_t i = 1; i < terminals.size(); i++)
+		terminals[i]->PrintActions(os);
+	terminals[0]->PrintActions(os);
+}
+
+void Grammer::DFA::CreateActions(Grammer &grammer) const // shuld this be a reference member
+{
+	for (auto &nonTerminal : grammer.nonTerminals)
+		nonTerminal->PrepareGos(transitions.size());
+	for (auto &terminal : grammer.terminals)
+		terminal->PrepareActions(transitions.size());
+	for (size_t i = 0; i < transitions.size(); i++)
+		for (auto &transition : transitions[i])
+			transition.on->AddShiftGo(i, transition.to);
+	for (size_t i = 0; i < states.size(); i++)
+		for (size_t j = 0; j < states[0].size(); j++)
+			if (states[i][j])
+				nfa.get().AddReductions(j, i);
+}
+Grammer::DFA Grammer::DFA::Generate(NFA &nfa, const Grammer &grammer)  /// note uses true state numbers (instead of state + 1)
+{
+	DFA dfa(nfa);
+	vector<size_t> reductions = nfa.ReductionStates();
+	vector<bool> stateSet(nfa.Size(), false);
+	stateSet[0] = true;
+	dfa.states.push_back(move(nfa.Closure(stateSet)));
+	dfa.transitions.emplace_back();
+	dfa.reductionStates.emplace_back();
+	for (size_t stateIndex = 0; stateIndex < dfa.states.size(); stateIndex++)
+	{
+		for (auto reduction : reductions)
+			if (dfa.states[stateIndex][reduction])
+				dfa.reductionStates[stateIndex].push_back(reduction);
+		bool terminalSet = true;
+		size_t index = 0;
+		Symbol *symbol;
+		while (true)
+		{
+			if (terminalSet)
+			{
+				if (index == grammer.terminals.size())
+				{
+					index = 2;
+					terminalSet = false;
+					continue;
+				}
+				symbol = grammer.terminals[index].get();
+			}
+			else
+			{
+				if (index == grammer.nonTerminals.size())
+					break;
+				symbol = grammer.nonTerminals[index].get();
+			}
+			stateSet = nfa.Move(dfa.states[stateIndex], symbol); /// the states of course can overlap so dfa.states is not a valid representation.
+			if (isNonempty(stateSet))
+			{
+				for (size_t prevStateIndex = 0;; prevStateIndex++)
+				{
+					if (prevStateIndex == dfa.states.size())
+					{
+						dfa.states.push_back(move(stateSet));
+						dfa.transitions.emplace_back();
+						dfa.transitions[stateIndex].push_back({ symbol, prevStateIndex });
+						dfa.reductionStates.emplace_back();
+						break;
+					}
+					else if (stateSet == dfa.states[prevStateIndex])
+					{
+						dfa.transitions[stateIndex].push_back({ symbol, prevStateIndex });
+						break;
+					}
+				}
+			}
+			index++;
+		}
+	}
+	return dfa;
+}
+bool Grammer::DFA::isNonempty(const vector<bool> &subset)
+{
+	for (auto element : subset)
+		if (element == true)
+			return true;
+	return false;
+}
+Grammer::DFA Grammer::DFA::Optimize(const DFA &dfa)
+{
+	vector<size_t> stateSets(dfa.transitions.size());
+	vector<bool> marked(dfa.transitions.size(), false);
+	size_t numStates = 0;
+	for (size_t i = 0; i < dfa.reductionStates.size(); i++)
+	{
+		if (marked[i])
+			continue;
+		stateSets[i] = numStates;
+		for (size_t j = i + 1; j < dfa.reductionStates.size(); j++)
+		{
+			if (!marked[j] && dfa.reductionStates[i] == dfa.reductionStates[j])
+			{
+				marked[j] = true;
+				stateSets[i] = numStates;
+			}
+		}
+		numStates++;
+	}
+
+	std::cout << stateSets[0];
+	/*
+	struct transition
+	{
+		size_t fromOld, fromNew, to;
+		bool marked;
+	};
+	vector<size_t> states;
+	states.reserve(dfa.stateInfo.size());
+	size_t numStates = 1;
+	bool nonAccepting = false;
+	for (auto info : dfa.stateInfo)
+	{
+		if (!info.accepting)
+			nonAccepting = true;
+		if (info.accepting > numStates)
+			numStates = info.accepting;
+	}
+	if (nonAccepting)
+		numStates++;
+	size_t offset = numStates - dfa.stateInfo[0].accepting;
+	for (auto info : dfa.stateInfo)
+		states.push_back((info.accepting + offset) % numStates + 1);
+	bool consistent = false;
+	while (!consistent)
+	{
+		consistent = true;
+		for (size_t charIndex = 1; charIndex < NFA::AlphabetSize(); charIndex++)
+		{
+			vector<transition> transitions;
+			transitions.reserve(states.size());
+			vector<size_t> currentTransVals(numStates);
+			for (size_t dfaState = states.size(); dfaState-- > 0;)
+			{
+				size_t trans = (dfa.stateInfo[dfaState].transitions[charIndex] == 0) ?
+					0 : states[dfa.stateInfo[dfaState].transitions[charIndex] - 1];
+				currentTransVals[states[dfaState] - 1] = trans;
+				transitions.push_back({ dfaState, states[dfaState], trans });
+			}
+			for (size_t i = transitions.size(); i-- > 0;)
+			{
+				if (transitions[i].marked == false)
+				{
+					if (transitions[i].to != currentTransVals[transitions[i].fromNew - 1])
+					{
+						consistent = false;
+						states[transitions[i].fromOld] = ++numStates;
+						currentTransVals[transitions[i].fromNew - 1] = transitions[i].to; //experimental: num_states
+					}
+					for (size_t j = i; j-- > 0;)
+					{
+						if ((transitions[j].marked == false) && (transitions[j].fromNew == transitions[i].fromNew) &&
+							(transitions[j].to == currentTransVals[transitions[j].fromNew - 1]))
+						{
+							transitions[j].marked = true;
+							states[transitions[j].fromOld] = states[transitions[i].fromOld];
+						}
+					}
+				}
+			}
+		}
+	}
+	stateInfo = vector<StateInfo>(numStates);
+	for (size_t i = 0; i < states.size(); i++)
+	{
+		stateInfo[states[i] - 1].accepting = dfa.stateInfo[i].accepting;
+		for (size_t j = 1; j < NFA::AlphabetSize(); j++)
+			stateInfo[states[i] - 1].transitions[j] = (dfa.stateInfo[i].transitions[j] == 0) ? 0 : states[dfa.stateInfo[i].transitions[j] - 1];
+	}
+	*/
+	return DFA(dfa.nfa);
+}
+
+void Shift::PrintAction(ostream &os) const
+{
+	os << "\t\tstack.push(" << to << ");\n"
+		"\t\tbreak;\n";
+}
+
+void Reduce::PrintAction(ostream &os) const
+{
+	nonTerminal->PrintReduce(os, production);
 }
