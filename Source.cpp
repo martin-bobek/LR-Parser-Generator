@@ -457,7 +457,7 @@ size_t Production::PrintReduce(ostream &os) const
 	{
 		os << "\t{\n";
 		for (auto &symbol : symbols)
-			os << "\t\tstack.pop()\n";
+			os << "\t\tstack.pop();\n";
 		for (size_t i = symbols.size(); i-- > 0;)
 			os << "\t\tp" << symbols[i]->Name() << " sym" << i + 1 << " = pCast<" << symbols[i]->Name() << ">(move(symStack.top()));\n"
 			"\t\tsymStack.pop();\n";
@@ -569,7 +569,7 @@ void NonTerminal::PrintReduce(ostream &os, size_t production) const
 {
 	if (acceptor)
 	{
-		os << "\t\treturn true;\n";
+		os << "\t\tbreak;\n";
 		return;
 	}
 	size_t numSymbols = productions[production].PrintReduce(os);
@@ -810,25 +810,32 @@ void Grammer::Print(ostream &os) const
 		"#include <stack>\n"
 		"#include <string>\n"
 		"#include <vector>\n\n"
-		"using move;\n\n"
+		"using std::move;\n"
+		"using std::cin;\n"
+		"using std::cout;\n"
+		"using std::endl;\n"
+		"using std::vector;\n"
+		"using std::string;\n"
+		"using std::stack;\n"
+		"using std::unique_ptr;\n\n"
 		"class Symbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		os << "class " << nonTerminals[i]->Name() << ";\n";
 	os << "class Terminal;\n";
 	for (size_t i = 1; i < terminals.size(); i++)
 		os << "class " << terminals[i]->Name() << ";\n";
-	os << "\ntypedef std::unique_ptr<Symbol> pSymbol;\n";
+	os << "\ntypedef unique_ptr<Symbol> pSymbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
-		os << "typedef std::unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
-	os << "typedef std::unique_ptr<Terminal> pTerminal;\n";
+		os << "typedef unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
+	os << "typedef unique_ptr<Terminal> pTerminal;\n";
 	for (size_t i = 1; i < terminals.size(); i++)
-		os << "typedef std::unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
-	os << "typedef std::stack<size_t, vector<size_t>> Stack;\n"
-		"typedef std::stack<pSymbol, vector<pSymbol>> SymStack;\n\n"
+		os << "typedef unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
+	os << "typedef stack<size_t, vector<size_t>> Stack;\n"
+		"typedef stack<pSymbol, vector<pSymbol>> SymStack;\n\n"
 		"template<typename Dest, typename Source>\n"
-		"std::unique_ptr<Dest> pCast(std::unique_ptr<Source> &&src)\n"
+		"unique_ptr<Dest> pCast(unique_ptr<Source> &&src)\n"
 		"{\n"
-		"\treturn std::unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
+		"\treturn unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
 		"}\n\n"
 		"class Parser\n"
 		"{\n"
