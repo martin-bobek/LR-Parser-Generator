@@ -85,6 +85,7 @@ public:
 	size_t Size() const { return symbols.size(); }							// number of symbols on RHS of production
 	Symbol *operator[](size_t index) const { return symbols[index]; }		// returns pointer to a symbol on the RHS of production
 
+	void PrintDescription(ostream &os) const;
 	void PrintClass(ostream &os, const string name, size_t num) const;
 private:
 	vector<Symbol *> symbols;								// symbols on the RHS of the production, in order
@@ -121,7 +122,8 @@ private:
 	bool acceptor;
 public:
 	void AddProduction(vector<Symbol *> &&production); // creates a new production from a vector of pointers to the symbols on the RHS of the production, and inserts it into the productions vector
-	void NonTerminal::PrintActions(ostream &os) const;
+	void PrintActions(ostream &os) const;
+	void PrintProductionDescription(ostream &os, size_t production) const;
 	void PrintReduce(ostream &os, size_t production) const;
 	void PrepareGos(size_t numStates) { gos.resize(numStates); }	// gos should have the same size as number of states (gos[i] represents transition taken in the ith state). gos is filled with 0's, representing no transition
 	void AddShiftGo(size_t from, size_t to) { gos[from] = to + 1; }	// the "on" symbol was a nonterminal, so the transition is a go. The entry in gos indicates that this nonTerminal is read, and the current state is "from", then a transition should happen to the state "to". 0 is reserved for no transition, so the state number + 1 is used to indicate a transition
@@ -206,6 +208,7 @@ class Action
 public:
 	virtual ~Action() = 0 {}
 	virtual void PrintAction(ostream &os) const = 0;
+	virtual void PrintName(ostream &os) const = 0;
 	virtual bool operator==(const Action &) const = 0;
 	virtual bool operator==(const Shift &) const = 0;
 	virtual bool operator==(const Reduce &) const = 0;
@@ -215,6 +218,7 @@ class Shift : public Action
 public:
 	Shift(size_t to) : to(to) {}
 	void PrintAction(ostream &os) const;
+	void PrintName(ostream &os) const { os << "\tShift\n"; }
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Reduce &) const { return false; }
 	bool operator==(const Shift &rhs) const { return to == rhs.to; }
@@ -226,6 +230,7 @@ class Reduce : public Action
 public:
 	Reduce(const NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
 	void PrintAction(ostream &os) const;
+	void PrintName(ostream &os) const;
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Shift &) const { return false; }
 	bool operator==(const Reduce &rhs) const { return (nonTerminal == rhs.nonTerminal) && (production == rhs.production); }
@@ -430,6 +435,12 @@ void Production::PrintClass(ostream &os, const string name, size_t num) const
 		os << "\tconst p" << symbols[i]->Name() << " symbol_" << i + 1 << ";\n";	// should this be a const here?
 	os << "};\n";
 }
+void Production::PrintDescription(ostream &os) const
+{
+	for (size_t i = 0; i < symbols.size(); i++)
+		os << symbols[i]->Name() << " ";
+	os << '\n';
+}
 size_t Production::PrintReduce(ostream &os) const
 {
 	if (!symbols.empty())
@@ -544,6 +555,11 @@ void NonTerminal::PrintClass(ostream &os) const
 	for (size_t i = 0; i < productions.size(); i++)
 		productions[i].PrintClass(os, name, i + 1);
 }
+void NonTerminal::PrintProductionDescription(ostream &os, size_t production) const
+{
+	os << name << " -> ";
+	productions[production].PrintDescription(os);
+}
 void NonTerminal::PrintReduce(ostream &os, size_t production) const
 {
 	if (acceptor)
@@ -586,8 +602,12 @@ void NonTerminal::SetupFollowConstraints() const
 
 void Terminal::AddReduction(size_t from, pReduce &&reduce)
 {
-	if (actions[from])		// checks to see if there is already a shift transition on that state for this terminal. If there is, then there is a conflict for this grammer which needs to be resolved with a precedence rule
-		std::cerr << "Invalid Grammer!" << std::endl;
+	if (actions[from]) {	// checks to see if there is already a shift transition on that state for this terminal. If there is, then there is a conflict for this grammer which needs to be resolved with a precedence rule
+		std::cout << "Conflict:\n";
+		actions[from]->PrintName(std::cout);
+		reduce->PrintName(std::cout);
+		std::cout << "\tOn: " << name << std::endl;
+	}
 	actions[from] = move(reduce);		// The reduces object (with information about the production being reduced on) is added on the "from" state (the state on which the reduction should happen for this terminal)
 }
 void Terminal::AddShiftGo(size_t from, size_t to)
@@ -981,7 +1001,7 @@ Grammer::DFA Grammer::DFA::Optimize(const DFA &dfa)
 		numStates++;
 	}
 
-	std::cout << stateSets[0];
+	std::cout << stateSets[0] << std::endl;
 	/*
 	struct transition
 	{
@@ -1059,8 +1079,12 @@ void Shift::PrintAction(ostream &os) const
 	os << "\t\tstack.push(" << to << ");\n"
 		"\t\tbreak;\n";
 }
-
 void Reduce::PrintAction(ostream &os) const
 {
 	nonTerminal->PrintReduce(os, production);
+}
+void Reduce::PrintName(ostream &os) const 
+{
+	os << "\tReduce: ";
+	nonTerminal->PrintProductionDescription(os, production);
 }
