@@ -40,7 +40,7 @@ vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Termina
 class Symbol
 {
 public:
-	virtual ~Symbol() = 0 {}
+	virtual ~Symbol() = 0;
 	virtual bool Nullable() const = 0;			// exposes nullable field (read only)
 	virtual vector<Terminal *> First() = 0;		// exposes the first set of the symbol (read only)
 	virtual void ExtractFollowConstraints(const NonTerminal *lhs, vector<Symbol *>::const_iterator it, vector<Symbol *>::const_iterator end) = 0; // adds the constraints on the follow set of this symbol for a production. lhs points to the nonterminal on the lhs of a production, it points to the next symbol
@@ -184,7 +184,7 @@ private:
 		DFA &operator=(DFA &&) = default;
 		static DFA Generate(NFA &nfa, const Grammer &grammer);	// takes an nfa and generates an equivalent dfa, omitting transitions on the terminated and accepting nonterminals. a pointer to grammer is needed in order to access terminals and nonterminals
 		static DFA Optimize(const DFA &dfa);
-		void CreateActions(Grammer &grammer) const;	// Analyzes the dfa and records all the go, reduce, and shift transitions inside the terminal and nonTerminal objects, asking for precedence rules when conflicts are found. After this, the terminals and nonterminal objects contain enough information to write the Parser program\
+		void CreateActions(Grammer &grammer) const;	// Analyzes the dfa and records all the go, reduce, and shift transitions inside the terminal and nonTerminal objects, asking for precedence rules when conflicts are found. After this, the terminals and nonterminal objects contain enough information to write the Parser program
 	private:
 		static bool isNonempty(const vector<bool> &subset);
 		vector<vector<bool>> states;	// contains subsets of the nfa states, representing the states of the dfa. Subsets of nfa states are represented by a vector where vec[i] = ith state is part of the set?
@@ -206,7 +206,7 @@ private:
 class Action
 {
 public:
-	virtual ~Action() = 0 {}
+	virtual ~Action() = 0;
 	virtual void PrintAction(ostream &os) const = 0;
 	virtual void PrintName(ostream &os) const = 0;
 	virtual bool operator==(const Action &) const = 0;
@@ -218,7 +218,7 @@ class Shift : public Action
 public:
 	Shift(size_t to) : to(to) {}
 	void PrintAction(ostream &os) const;
-	void PrintName(ostream &os) const { os << "\tShift\n"; }
+	void PrintName(ostream &os) const { os << "Shift\n"; }
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Reduce &) const { return false; }
 	bool operator==(const Shift &rhs) const { return to == rhs.to; }
@@ -268,7 +268,6 @@ int main(int argc, char *argv[])
 	{
 		std::cerr << msg << std::endl;
 	}
-	system("pause");
 }
 
 vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
@@ -299,6 +298,8 @@ vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Termina
 			result.push_back(setA[++iB, iA++]);	// if there is an equal element, just push back one (comma operator not overloaded)
 	}
 }
+
+Symbol::~Symbol() {}
 
 void NFA::AddReductions(size_t nfaState, size_t dfaState)
 {
@@ -446,7 +447,7 @@ size_t Production::PrintReduce(ostream &os) const
 	if (!symbols.empty())
 	{
 		os << "\t{\n";
-		for (auto &symbol : symbols)
+		for (size_t i = 0; i < symbols.size(); i++)
 			os << "\t\tstack.pop();\n";
 		for (size_t i = symbols.size(); i-- > 0;)
 			os << "\t\tp" << symbols[i]->Name() << " sym" << i + 1 << " = pCast<" << symbols[i]->Name() << ">(move(symStack.top()));\n"
@@ -603,10 +604,22 @@ void NonTerminal::SetupFollowConstraints() const
 void Terminal::AddReduction(size_t from, pReduce &&reduce)
 {
 	if (actions[from]) {	// checks to see if there is already a shift transition on that state for this terminal. If there is, then there is a conflict for this grammer which needs to be resolved with a precedence rule
-		std::cout << "Conflict:\n";
-		actions[from]->PrintName(std::cout);
+		char choice;
+		std::cout << "Conflict:\n\tOn: " << name << "\n\t1 - ";
 		reduce->PrintName(std::cout);
-		std::cout << "\tOn: " << name << std::endl;
+		std::cout << "\t2 - ";
+		actions[from]->PrintName(std::cout);
+		while (true) {
+			choice = '\0';
+			std::cout << "\tSelect action (1/2): ";
+			std::cin >> choice;
+			std::cin.clear();
+			std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+			if (choice == '1')
+				break;
+			else if (choice == '2')
+				return;
+		}
 	}
 	actions[from] = move(reduce);		// The reduces object (with information about the production being reduced on) is added on the "from" state (the state on which the reduction should happen for this terminal)
 }
@@ -1074,6 +1087,7 @@ Grammer::DFA Grammer::DFA::Optimize(const DFA &dfa)
 	return DFA(dfa.nfa);
 }
 
+Action::~Action() {}
 void Shift::PrintAction(ostream &os) const
 {
 	os << "\t\tstack.push(" << to << ");\n"
@@ -1085,6 +1099,6 @@ void Reduce::PrintAction(ostream &os) const
 }
 void Reduce::PrintName(ostream &os) const 
 {
-	os << "\tReduce: ";
+	os << "Reduce: ";
 	nonTerminal->PrintProductionDescription(os, production);
 }
