@@ -15,6 +15,7 @@
 
 using std::move;
 using std::ostream;
+using std::istream;
 using std::string;
 using std::vector;
 using std::unique_ptr;
@@ -36,6 +37,7 @@ typedef unique_ptr<Terminal> pTerminal;
 typedef reference_wrapper<NFA> rNFA;
 
 vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB);	// computes the union of two sets of pointers. assumes setA, setB are in increasing order. Result is then also ordered
+void FCopy(ostream &os, istream &is);
 
 class Symbol
 {
@@ -136,7 +138,7 @@ public:
 	vector<Terminal *> First() { return{ this }; }		// the first set of a terminal is itself
 	void ExtractFollowConstraints(const NonTerminal *, vector<Symbol *>::const_iterator, vector<Symbol *>::const_iterator) {} // the follow sets of terminals are unimportant and not computed
 	vector<const State *> NfaRoots() { return vector<const State *>(); }	// returns an empty vector since no NFA's reduce to a terminal
-	void PrintActions(ostream &os) const;
+	void PrintActions(ostream &os, bool isEnd = false) const;
 
 	void PrepareActions(size_t numStates) { actions.resize(numStates); }	// actions (shift/reduce) should have the same size as number of states (actions[i] represents the transition taken in the ith state). actions is filled with nullptr's, representing no transitions
 	void AddShiftGo(size_t from, size_t to);			// the "on" symbol was a terminal, so the transition is a shift. the appropriate shift object is added to actions
@@ -173,7 +175,7 @@ public:
 	void InitializeFollow();		// computes which terminals can directly follow a nonTerminal (including END terminal)
 	void GenerateDfa();
 	
-	void Print(ostream &os) const;
+	void Print(ostream &os, istream &iClass, istream &iTerminals, istream &iDefinitions) const;
 private:
 	Grammer();	// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	class DFA
@@ -242,10 +244,10 @@ private:
 
 int main(int argc, char *argv[])
 {
-	if (argc != 2)
+	if (argc != 5)
 	{
 		std::cerr << "Improper number of arguments entered!" << std::endl;
-		return 1;
+		return 0;
 	}
 
 	Grammer grammer = Grammer::GetGrammer(); // Obtains productions from command line inputs and constructs a fully formed grammer
@@ -259,10 +261,29 @@ int main(int argc, char *argv[])
 		std::ofstream os(argv[1]);
 		if (os.fail())
 		{
-			std::cerr << "Failed to open file!" << std::endl;
+			std::cerr << "Failed to open file 1!" << std::endl;
 			return 1;
 		}
-		grammer.Print(os);
+		std::ifstream iClass(argv[2]);
+		if (iClass.fail())
+		{
+			std::cerr << "Failed to open file 2!" << std::endl;
+			return 1;
+		}
+		std::ifstream iTerminals(argv[3]);
+		if (iTerminals.fail())
+		{
+			std::cerr << "Failed to open file 3!" << std::endl;
+			return 1;
+		}
+		std::ifstream iDefinitions(argv[4]);
+		if (iDefinitions.fail())
+		{
+			std::cerr << "Failed to open file 4!" << std::endl;
+			return 1;
+		}
+		grammer.Print(os, iClass, iTerminals, iDefinitions);
+
 	}
 	catch (char *msg)
 	{
@@ -297,6 +318,12 @@ vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Termina
 		else
 			result.push_back(setA[++iB, iA++]);	// if there is an equal element, just push back one (comma operator not overloaded)
 	}
+}
+void FCopy(ostream &os, istream &is)
+{
+	char c;
+	while (is.get(c), !is.eof())
+		os.put(c);
 }
 
 Symbol::~Symbol() {}
@@ -408,9 +435,7 @@ void Production::PrintClass(ostream &os, const string name, size_t num) const
 		"\t" << name << num << '(';
 	if (symbols.empty())
 	{
-		os << ") = default;\n"
-			"\t~" << name << num << "() = default;\n"
-			"};\n";
+		os << ") = default;\n";
 		return;
 	}
 	for (size_t i = 0;;)
@@ -430,7 +455,6 @@ void Production::PrintClass(ostream &os, const string name, size_t num) const
 		os << ", ";
 	}
 	os << " {}\n"
-		"\t~" << name << num << "() = default;\n"
 		"private:\n";
 	for (size_t i = 0; i < symbols.size(); i++)
 		os << "\tconst p" << symbols[i]->Name() << " symbol_" << i + 1 << ";\n";	// should this be a const here?
@@ -550,9 +574,10 @@ void NonTerminal::PrintClass(ostream &os) const
 	os << "class " << name << " : public Symbol\n"
 		"{\n"
 		"public:\n"
-		"\tvirtual ~" << name << "() = 0 {}\n"
+		"\tvirtual ~" << name << "() = 0;\n"
 		"\tstatic bool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
-		"};\n";
+		"};\n" <<
+		name << "::~" << name << "() = default;\n";
 	for (size_t i = 0; i < productions.size(); i++)
 		productions[i].PrintClass(os, name, i + 1);
 }
@@ -627,10 +652,12 @@ void Terminal::AddShiftGo(size_t from, size_t to)
 {
 	actions[from] = pAction(new Shift(to));		// the "on" symbol was a terminal, so the transition is a shift. The entry in gos indicates that when this Terminal is read, and the current state is "from", then a transition should happen to the state "to"
 }
-void Terminal::PrintActions(ostream &os) const
+void Terminal::PrintActions(ostream &os, bool isEnd) const
 {
-	os << "\nbool " << name << "::Process(Stack &stack, SymStack &symStack, Parser::Error &err) const\n"
-		"{\n"
+	os << "\nbool " << name << "::Process(Stack &stack, SymStack &symStack, Parser::Error &err)";
+	if (!isEnd)
+		os << " const";
+	os << "\n{\n"
 		"\tswitch (stack.top())\n"
 		"\t{\n";
 	vector<bool> marked(actions.size(), false);
@@ -814,64 +841,63 @@ Grammer::Grammer() : dfa(nfa) // an empty NFA has already been default construct
 	nonTerminals.push_back(move(acceptor));
 	terminals.push_back(move(end));				// adds the end terminal
 }
-void Grammer::Print(ostream &os) const
+void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &iDefinitions) const
 {
 	os << "#include <iostream>\n"
+		"#include <istream>\n"
 		"#include <memory>\n"
 		"#include <stack>\n"
 		"#include <string>\n"
 		"#include <vector>\n\n"
-		"using std::move;\n"
-		"using std::cin;\n"
-		"using std::cout;\n"
-		"using std::endl;\n"
-		"using std::vector;\n"
-		"using std::string;\n"
-		"using std::stack;\n"
-		"using std::unique_ptr;\n\n"
+		"using std::move;\n\n"
 		"class Symbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		os << "class " << nonTerminals[i]->Name() << ";\n";
 	os << "class Terminal;\n";
 	for (size_t i = 1; i < terminals.size(); i++)
 		os << "class " << terminals[i]->Name() << ";\n";
-	os << "\ntypedef unique_ptr<Symbol> pSymbol;\n";
+	os << "\ntypedef std::unique_ptr<Symbol> pSymbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
-		os << "typedef unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
-	os << "typedef unique_ptr<Terminal> pTerminal;\n";
+		os << "typedef std::unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
+	os << "typedef std::unique_ptr<Terminal> pTerminal;\n";
 	for (size_t i = 1; i < terminals.size(); i++)
-		os << "typedef unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
-	os << "typedef stack<size_t, vector<size_t>> Stack;\n"
-		"typedef stack<pSymbol, vector<pSymbol>> SymStack;\n\n"
+		os << "typedef std::unique_ptr<" << terminals[i]->Name() << "> p" << terminals[i]->Name() << ";\n";
+	os << "typedef std::stack<size_t, std::vector<size_t>> Stack;\n"
+		"typedef std::stack<pSymbol, std::vector<pSymbol>> SymStack;\n"
+		"typedef std::string::const_iterator Iterator;\n\n"
 		"template<typename Dest, typename Source>\n"
-		"unique_ptr<Dest> pCast(unique_ptr<Source> &&src)\n"
+		"std::unique_ptr<Dest> pCast(std::unique_ptr<Source> &&src)\n"
 		"{\n"
-		"\treturn unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
+		"\treturn std::unique_ptr<Dest>(static_cast<Dest *>(src.release()));\n"
 		"}\n\n"
 		"class Parser\n"
 		"{\n"
 		"public:\n"
-		"\tParser(vector<pTerminal> &&in) : input(move(in)) {}\n"
+		"\tParser(std::vector<pTerminal> &&in) : input(move(in)) {}\n"
 		"\tbool CreateTree();\n"
-		"\tpT GetTree() { return move(tree); };\n\n"
+		"\tp" << nonTerminals[2]->Name() << " GetTree() { return move(tree); };\n\n"
 		"\tstruct Error\n"
 		"\t{\n"
-		"\t\tstring Location;\n"
-		"\t\tstring Message;\n"
+		"\t\tstd::string Location;\n"
+		"\t\tstd::string Message;\n"
 		"\t};\n"
 		"\tError GetErrorReport() { return move(err); }\n"
 		"private:\n"
-		"\tpT tree;\n"
-		"\tvector<pTerminal> input;\n"
+		"\tp" << nonTerminals[2]->Name() << " tree;\n"
+		"\tstd::vector<pTerminal> input;\n"
 		"\tError err;\n"
-		"};\n\n"
-		"class Symbol\n"
+		"};\n";
+	FCopy(os, iClass);
+	os << "\nclass Symbol\n"
 		"{\n"
 		"public:\n"
-		"\tvirtual ~Symbol() = 0 {}\n"
-		"};\n";
+		"\tvirtual ~Symbol() = 0;\n"
+		"};\n"
+		"Symbol::~Symbol() = default;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		nonTerminals[i]->PrintClass(os);
+	FCopy(os, iTerminals);
+	/*
 	os << "class Terminal : public Symbol \n"
 		"{\n"
 		"public:\n"
@@ -885,7 +911,8 @@ void Grammer::Print(ostream &os) const
 		"\t~" << terminals[i]->Name() << "() = default;\n"
 		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const;\n"
 		"};\n";
-	os << "namespace End \n"
+	*/
+	os << "namespace End\n"
 		"{\n"
 		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
 		"}\n\n\n\n"
@@ -902,14 +929,16 @@ void Grammer::Print(ostream &os) const
 		"\t}\n"
 		"\tif (!End::Process(stack, symStack, err))\n"
 		"\t\treturn false;\n"
-		"\ttree = pCast<T>(move(symStack.top()));\n"
+		"\ttree = pCast<" << nonTerminals[2]->Name() << ">(move(symStack.top()));\n"
 		"\treturn true;\n"
 		"}";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		nonTerminals[i]->PrintActions(os);
 	for (size_t i = 1; i < terminals.size(); i++)
 		terminals[i]->PrintActions(os);
-	terminals[0]->PrintActions(os);
+	terminals[0]->PrintActions(os, true);
+	os << "\n\n";
+	FCopy(os, iDefinitions);
 }
 
 void Grammer::DFA::CreateActions(Grammer &grammer) const
