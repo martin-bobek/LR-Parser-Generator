@@ -88,13 +88,15 @@ public:
 	Symbol *operator[](size_t index) const { return symbols[index]; }		// returns pointer to a symbol on the RHS of production
 
 	void PrintDescription(ostream &os) const;
-	void PrintClass(ostream &os, const string name, size_t num) const;
+	void PrintClass(ostream &os, const string &name) const;
 private:
+	std::string name;
 	vector<Symbol *> symbols;								// symbols on the RHS of the production, in order
 	NFA nfa;												// Linear nfa with transitions on the symbols on RHS of production
 public:
-	Production(vector<Symbol *> &&symbols) : symbols(move(symbols)) {}	// moves the vector of RHS symbols into the newly constructed object
+	Production(std::string &&name, std::vector<Symbol *> &&symbols) : name(move(name)), symbols(move(symbols)) {}	// moves the vector of RHS symbols into the newly constructed object
 	size_t PrintReduce(ostream &os) const;
+	const std::string &Name() const { return name; }
 };
 class NonTerminal : public Symbol
 {
@@ -123,7 +125,7 @@ private:
 	vector<size_t> gos;
 	bool acceptor;
 public:
-	void AddProduction(vector<Symbol *> &&production); // creates a new production from a vector of pointers to the symbols on the RHS of the production, and inserts it into the productions vector
+	void AddProduction(std::string &&name, std::vector<Symbol *> &&production); // creates a new production from a vector of pointers to the symbols on the RHS of the production, and inserts it into the productions vector
 	void PrintActions(ostream &os) const;
 	void PrintProductionDescription(ostream &os, size_t production) const;
 	void PrintReduce(ostream &os, size_t production) const;
@@ -431,12 +433,12 @@ const State *Production::GetRoot(const NonTerminal *nonTerminal, size_t producti
 		nfa.Initialize(*this, nonTerminal, production);		// if it hasn't, a new nfa is created. This NFA contains transitions to all the NFA's which reduce to nonterminals on the RHS. The nonTerminal pointer and production number are used to create a link to the production in the reduce state
 	return nfa.GetRoot();	// returns a pointer to the first state in the nfa.
 }
-void Production::PrintClass(ostream &os, const string name, size_t num) const
+void Production::PrintClass(ostream &os, const string &terminal) const
 {
-	os << "class " << name << num << " : public " << name << "\n"
+	os << "class " << terminal << '_' << name << " : public " << terminal << "\n"
 		"{\n"
 		"public:\n"
-		"\t" << name << num << '(';
+		"\t" << terminal << '_' << name << '(';
 	if (symbols.empty())
 	{
 		os << ") = default;\n"
@@ -485,9 +487,9 @@ size_t Production::PrintReduce(ostream &os) const
 	return symbols.size();
 }
 
-void NonTerminal::AddProduction(vector<Symbol *> &&production)
+void NonTerminal::AddProduction(std::string &&name, std::vector<Symbol *> &&production)
 {
-	productions.emplace_back(move(production));	// moves the vector of pointers to the symbols on the RHS of the production into a new Production object, located in a slot of the productions vector in the object corresponding to the LHS symbol
+	productions.emplace_back(move(name), move(production));	// moves the vector of pointers to the symbols on the RHS of the production into a new Production object, located in a slot of the productions vector in the object corresponding to the LHS symbol
 }
 void NonTerminal::ExtractFollowConstraints(const NonTerminal *lhs, vector<Symbol *>::const_iterator it, vector<Symbol *>::const_iterator end)
 {	// at minimum, the first set of a nonterminal includes the union of first sets of the symbols following it in a production
@@ -582,9 +584,9 @@ void NonTerminal::PrintClass(ostream &os) const
 		"\tvirtual ~" << name << "() = 0;\n"
 		"\tstatic bool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
 		"};\n" <<
-		name << "::~" << name << "() = default;\n";
-	for (size_t i = 0; i < productions.size(); i++)
-		productions[i].PrintClass(os, name, i + 1);
+		"inline " << name << "::~" << name << "() = default;\n";
+	for (const Production &production : productions)
+		production.PrintClass(os, name);
 }
 void NonTerminal::PrintProductionDescription(ostream &os, size_t production) const
 {
@@ -599,7 +601,7 @@ void NonTerminal::PrintReduce(ostream &os, size_t production) const
 		return;
 	}
 	size_t numSymbols = productions[production].PrintReduce(os);
-	os << "\t\tsymStack.emplace(new " << name << production + 1 << '(';
+	os << "\t\tsymStack.emplace(new " << name << '_' << productions[production].Name() << '(';
 	if (numSymbols)
 	{
 		for (size_t i = 1;; i++)
@@ -647,12 +649,12 @@ void Terminal::AddReduction(size_t from, pReduce &&reduce, std::ostream &out)
 			std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 			if (choice == '1')
 			{
-				out << choice << "\r\n";
+				out << choice << '\r' << std::endl;
 				break;
 			}
 			else if (choice == '2')
 			{
-				out << choice << "\r\n";
+				out << choice << '\r' << std::endl;
 				return;
 			}
 		}
@@ -753,6 +755,7 @@ Grammer Grammer::GetGrammer(std::ostream &out)
 {
 	Grammer grammer;		// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	vector<vector<vector<string>>> productions; // preliminary productions array containing just string names productions[which nonTerminal][which production][which RHS symbol] = name
+	vector<vector<string>> productionNames; // names of the productions to be used when defining classes. productionName[which nonTerminal][which production] = name
 
 	while (true)	// loops to gather productions from user until a finished symbol ($) is entered
 	{
@@ -760,7 +763,7 @@ Grammer Grammer::GetGrammer(std::ostream &out)
 		string name;								// the name of the production
 		std::cout << "Non-Terminal: ";
 		std::cin >> name;
-		out << name << "\r\n";
+		out << name << '\r' << std::endl;
 		if (name == "$")							// if user inputs finished symbol ($), exit the loop
 			break;
 		size_t i;
@@ -777,12 +780,18 @@ Grammer Grammer::GetGrammer(std::ostream &out)
 			grammer.nonTerminals.emplace_back(new NonTerminal(move(name)));		// create a new nonterminal with the current name and add it to the back of nonTerminals
 			nonTerminal = grammer.nonTerminals.back().get();
 			productions.emplace_back();		// create a new entry in productions, for the newly added nonterminal. The index in productions is two smaller than the index in nonTerminals
+			productionNames.emplace_back();	// create a new entry in productionNames, for the newly added nonterminal
 		}
+		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+		std::cout << "\tName: ";
+		std::cin >> name;
+		productionNames[i - 2].push_back(name);
+		out << '\t' << name << '\r' << std::endl;
 		std::cout << "\t-> ";
 		productions[i - 2].emplace_back();	// add a slot for a new production for the current nonterminal
 		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');		// clear the input buffer
 		std::getline(std::cin, name);	// and get a new line representing the full rhs of the production
-		out << name << "\r\n";
+		out << '\t' << name << '\r' << std::endl;
 		string::const_iterator it = name.begin(), begin, end = name.end();
 		while (true) // break up string into space separated tokens and add those to the newly created production (just strings so far)
 		{
@@ -796,38 +805,38 @@ Grammer Grammer::GetGrammer(std::ostream &out)
 			productions[i - 2].back().push_back(string(begin, it));
 		}
 	}
-	grammer.nonTerminals[1]->AddProduction({ grammer.nonTerminals[2].get() }); // link the automatically generated acceptor nonterminal to the start symbol of the user grammer using a production
+	grammer.nonTerminals[1]->AddProduction("", { grammer.nonTerminals[2].get() }); // link the automatically generated acceptor nonterminal to the start symbol of the user grammer using a production
 	for (size_t i = 0; i < productions.size(); i++) // this loop turns the primitive productions array above into actual productions, now that the names of all the nonterminals are known.
 	{	// i + 2 represents the nonterminal number. Once again the two automatically generated nonterminals are not counted (terminated and acceptor)
-		for (auto &production : productions[i])	// loops through the productions of the (i + 2)th nonterminal
+		for (size_t j = 0; j < productions[i].size(); j++)	// loops through the productions of the (i + 2)th nonterminal
 		{
-			vector<Symbol *> symbols(production.size(), nullptr);	// vector containing pointers to the actual symbol objects on the RHS of the production
-			for (size_t j = 0; j < production.size(); j++)	// loops through the names on the RHS of the primitive production
+			vector<Symbol *> symbols(productions[i][j].size(), nullptr);	// vector containing pointers to the actual symbol objects on the RHS of the production
+			for (size_t k = 0; k < productions[i][j].size(); k++)	// loops through the names on the RHS of the primitive production
 			{
-				for (size_t k = 2; k < grammer.nonTerminals.size(); k++)		// attempts to match the name to a nonTerminal
+				for (size_t l = 2; l < grammer.nonTerminals.size(); l++)		// attempts to match the name to a nonTerminal
 				{
-					if (production[j] == grammer.nonTerminals[k]->Name())
+					if (productions[i][j][k] == grammer.nonTerminals[l]->Name())
 					{
-						symbols[j] = grammer.nonTerminals[k].get();
+						symbols[k] = grammer.nonTerminals[l].get();
 						break;
 					}
 				}
-				if (symbols[j])
+				if (symbols[k])
 					continue;
-				for (size_t k = 1; k < grammer.terminals.size(); k++)			// otherwise, attempts to match the name to an already encountered terminal
+				for (size_t l = 1; l < grammer.terminals.size(); l++)			// otherwise, attempts to match the name to an already encountered terminal
 				{
-					if (production[j] == grammer.terminals[k]->Name())
+					if (productions[i][j][k] == grammer.terminals[l]->Name())
 					{
-						symbols[j] = grammer.terminals[k].get();
+						symbols[k] = grammer.terminals[l].get();
 						break;
 					}
 				}
-				if (symbols[j])
+				if (symbols[k])
 					continue;
-				grammer.terminals.emplace_back(new Terminal(move(production[j])));	// if the above two failed, then the symbol is a new terminal. A new terminal object is created
-				symbols[j] = grammer.terminals.back().get();
+				grammer.terminals.emplace_back(new Terminal(move(productions[i][j][k])));	// if the above two failed, then the symbol is a new terminal. A new terminal object is created
+				symbols[k] = grammer.terminals.back().get();
 			}
-			grammer.nonTerminals[i + 2]->AddProduction(move(symbols));	// once all the names are matched to symbol object, a true production is created using the symbol pointers
+			grammer.nonTerminals[i + 2]->AddProduction(move(productionNames[i][j]), move(symbols));	// once all the names are matched to symbol object, a true production is created using the symbol pointers
 		}
 	}
 	return grammer;		// returns the now completed grammer
@@ -849,7 +858,7 @@ Grammer::Grammer() : dfa(nfa) // an empty NFA has already been default construct
 {
 	pNonTerminal terminated(new NonTerminal("")), acceptor(new NonTerminal("", true));  // terminated: production used to add the end of file symbol. Needed to give acceptor the correct follow set. acceptor only has end in its follow set, so a reduction on acceptor means the input is accepted.
 	pTerminal end(new Terminal("End"));			// The implied end symbol of the grammer (end of file)
-	terminated->AddProduction({ acceptor.get(), end.get() }); // terminated -> acceptor end. Acceptor will then have the user specified grammer attached
+	terminated->AddProduction("", { acceptor.get(), end.get() }); // terminated -> acceptor end. Acceptor will then have the user specified grammer attached
 	nonTerminals.push_back(move(terminated));	// adds the two non terminals in order
 	nonTerminals.push_back(move(acceptor));
 	terminals.push_back(move(end));				// adds the end terminal
@@ -906,7 +915,7 @@ void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &
 		"public:\n"
 		"\tvirtual ~Symbol() = 0;\n"
 		"};\n"
-		"Symbol::~Symbol() = default;\n";
+		"inline Symbol::~Symbol() = default;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		nonTerminals[i]->PrintClass(os);
 	FCopy(os, iTerminals);
