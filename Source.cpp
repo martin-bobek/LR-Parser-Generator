@@ -21,6 +21,7 @@ using std::vector;
 using std::unique_ptr;
 using std::reference_wrapper;
 
+class Reader;
 class Production;
 class Terminal;
 class NonTerminal;
@@ -171,7 +172,8 @@ private:
 class Grammer
 {
 public:
-	static Grammer GetGrammer(std::ostream &os);	// Obtains productions from command line inputs and constructs a fully formed grammer, including an END symbol and the two head nonterminals (terminated and acceptor)
+	static Grammer GetGrammer(Reader &in);	// Obtains productions from command line inputs and constructs a fully formed grammer, including an END symbol and the two head nonterminals (terminated and acceptor)
+	bool Fail() const { return terminals.size() <= 1; }
 	void InitializeNullable();		// computes which nonterminals can produce just a empty string of symbols and marks this in a nullable field
 	void InitializeFirst();			// computes which terminals can be the first element of a string produced by a nonterminal
 	void InitializeFollow();		// computes which terminals can directly follow a nonTerminal (including END terminal)
@@ -244,6 +246,102 @@ private:
 	size_t production;
 };
 
+class Reader 
+{
+public:
+	enum Token { LHS, NAME, RHS, END, FAIL, UNDEFINED };
+	Reader(std::ifstream &&in) : in(move(in)) {}
+	Reader &operator>>(std::string &str);
+	operator Token() const { return lastToken; }
+private:
+	enum Lex_t { INVALID_L, START_L, PROD_L, NAME_L };
+	enum State_t { WAIT_START, FOUND_START, WAIT_NAME, WAIT_PROD, FOUND_PROD };
+	static Lex_t Lexer_1(std::string::iterator &it, std::string::iterator end);
+	static Lex_t Lexer_2(std::string::iterator &it, std::string::iterator end);
+
+	std::ifstream in;
+	std::string word;
+	std::string::iterator it = word.end();
+	Token lastToken = UNDEFINED;
+	State_t state = WAIT_START;
+};
+
+Reader &Reader::operator>>(std::string &str)
+{
+	while (true) {
+		if (it == word.end()) {
+			if (!(in >> word)) {
+				if (in.eof() && (state == WAIT_START || state == FOUND_PROD))
+					lastToken = END;
+				else
+					lastToken = FAIL;
+				return *this;
+			}
+			it = word.begin();
+		}
+		std::string::iterator begin = it;
+		lastToken = FAIL;
+		switch (Lexer_1(it, word.end())) {
+		case START_L:
+			if (state == WAIT_START || state == FOUND_PROD) {
+				state = FOUND_START;
+				break;
+			}
+			return *this;
+		case PROD_L:
+			if (state == WAIT_PROD) {
+				state = FOUND_PROD;
+				break;
+			}
+			return *this;
+		case NAME_L:
+			if (state == FOUND_START) {
+				state = WAIT_NAME;
+				lastToken = LHS;
+				str = std::string(begin, it);
+			}
+			else if (state == WAIT_NAME) {
+				state = WAIT_PROD;
+				lastToken = NAME;
+				str = std::string(begin, it);
+			}
+			else if (state == FOUND_PROD) {
+				lastToken = RHS;
+				str = std::string(begin, it);
+			}
+			return *this;
+		default:
+			return *this;
+		}
+	}
+}
+
+Reader::Lex_t Reader::Lexer_1(std::string::iterator &it, std::string::iterator end)
+{
+	if (it != end)
+	{
+		char c = *it++;
+		if (c == ':')
+			return START_L;
+		else if (c == '>')
+			return PROD_L;
+		else if (std::isalpha(c) || c == '_')
+			return Lexer_2(it, end);
+	}
+	return INVALID_L;
+}
+Reader::Lex_t Reader::Lexer_2(std::string::iterator &it, std::string::iterator end)
+{
+	if (it != end)
+	{
+		std::string::iterator cont = it;
+		char c = *cont++;
+		if (std::isalpha(c) || std::isdigit(c) || c == '_')
+			if (Lexer_2(cont, end) != INVALID_L)
+				it = cont;
+	}
+	return NAME_L;
+}
 
 int main(int argc, char *argv[])
 {
@@ -252,43 +350,49 @@ int main(int argc, char *argv[])
 		std::cerr << "Improper number of arguments entered!" << std::endl;
 		return 1;
 	}
-	std::ofstream iGrammer(argv[5]);
+	std::ifstream iGrammer(argv[1]);
 	if (iGrammer.fail())
 	{
-		std::cerr << "Failed to open file 5!" << std::endl;
+		std::cerr << "Failed to open file: " << argv[1] << std::endl;
 		return 1;
 	}
-	Grammer grammer = Grammer::GetGrammer(iGrammer); // Obtains productions from command line inputs and constructs a fully formed grammer
+	Reader reader(move(iGrammer));
+	Grammer grammer = Grammer::GetGrammer(reader); // Obtains productions from command line inputs and constructs a fully formed grammer
+	if (grammer.Fail())
+	{
+		std::cerr << "Failed to read grammer from input file!" << std::endl;
+		return 1;
+	}
 	grammer.InitializeNullable();			 // computes which nonterminals can produce just a empty string of symbols
 	grammer.InitializeFirst();				 // computes which terminals can be the first element of a string produced by a nonterminal
 	grammer.InitializeFollow();				 // computes which terminals can directly follow a nonTerminal (including END terminal)
-	grammer.GenerateDfa(iGrammer);
+	grammer.GenerateDfa(std::cout);
 	
 	try
 	{
-		std::ofstream os(argv[1]);
+		std::ofstream os(argv[2]);
 		if (os.fail())
 		{
-			std::cerr << "Failed to open file 1!" << std::endl;
+			std::cerr << "Failed to open file: " << argv[2] << std::endl;
 			return 1;
 		}
-		std::ifstream iClass(argv[2]);
+		std::ifstream iClass(argv[3]);
 		if (iClass.fail())
 		{
-			std::cerr << "Failed to open file 2!" << std::endl;
+			std::cerr << "Failed to open file: " << argv[3] << std::endl;
 			return 1;
 		}
-		std::ifstream iTerminals(argv[3]);
+		std::ifstream iTerminals(argv[4]);
 		if (iTerminals.fail())
 		{
-			std::cerr << "Failed to open file 3!" << std::endl;
+			std::cerr << "Failed to open file: " << argv[4] << std::endl;
 			return 1;
 		}
 		grammer.PrintHeader(os, iClass, iTerminals);
-		os = std::ofstream(argv[4]);
+		os = std::ofstream(argv[5]);
 		if (os.fail())
 		{
-			std::cerr << "Failed to open file 4!" << std::endl;
+			std::cerr << "Failed to open file: " << argv[5] << std::endl;
 			return 1;
 		}
 		grammer.PrintDefinitions(os);
@@ -753,60 +857,53 @@ void Grammer::InitializeNullable()
 				valid = false;					// when all nonTerminals' nullable fields stay constant through an iteration then the algorithm is done
 	}
 }
-Grammer Grammer::GetGrammer(std::ostream &out)
+Grammer Grammer::GetGrammer(Reader &in)
 {
 	Grammer grammer;		// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	vector<vector<vector<string>>> productions; // preliminary productions array containing just string names productions[which nonTerminal][which production][which RHS symbol] = name
 	vector<vector<string>> productionNames; // names of the productions to be used when defining classes. productionName[which nonTerminal][which production] = name
 
-	while (true)	// loops to gather productions from user until a finished symbol ($) is entered
+	size_t i = 0;
+	bool End = false;
+	while (!End)	// loops to gather productions from user until a finished symbol ($) is entered
 	{
-		const NonTerminal *nonTerminal = nullptr;	// nonterminal on the LHS of the current production being entered
-		string name;								// the name of the production
-		std::cout << "Non-Terminal: ";
-		std::cin >> name;
-		out << name << '\r' << std::endl;
-		if (name == "$")							// if user inputs finished symbol ($), exit the loop
-			break;
-		size_t i;
-		for (i = 2; i < grammer.nonTerminals.size(); i++)	// loop through the already entered nonterminals to see if the current nonterminal is already present
-		{			// skip the first two nonterminals, since they are not user nonterminals (terminated and acceptor)
-			if (name == grammer.nonTerminals[i]->Name())	// if a name matches, make nonTerminal point to the matching nonterminal
-			{
-				nonTerminal = grammer.nonTerminals[i].get();
-				break;
+		string name;
+		switch (in >> name)
+		{
+		case Reader::LHS: {
+			const NonTerminal *nonTerminal = nullptr;	// nonterminal on the LHS of the current production being entered
+			for (i = 2; i < grammer.nonTerminals.size(); i++)	// loop through the already entered nonterminals to see if the current nonterminal is already present
+			{			// skip the first two nonterminals, since they are not user nonterminals (terminated and acceptor)
+				if (name == grammer.nonTerminals[i]->Name())	// if a name matches, make nonTerminal point to the matching nonterminal
+				{
+					nonTerminal = grammer.nonTerminals[i].get();
+					break;
+				}
 			}
+			if (!nonTerminal) // a matching nonterminal name was not found, so the current nonterminal is new
+			{
+				grammer.nonTerminals.emplace_back(new NonTerminal(move(name)));		// create a new nonterminal with the current name and add it to the back of nonTerminals
+				nonTerminal = grammer.nonTerminals.back().get();
+				productions.emplace_back();		// create a new entry in productions, for the newly added nonterminal. The index in productions is two smaller than the index in nonTerminals
+				productionNames.emplace_back();	// create a new entry in productionNames, for the newly added nonterminal
+			}
+			break;
 		}
-		if (!nonTerminal) // a matching nonterminal name was not found, so the current nonterminal is new
-		{
-			grammer.nonTerminals.emplace_back(new NonTerminal(move(name)));		// create a new nonterminal with the current name and add it to the back of nonTerminals
-			nonTerminal = grammer.nonTerminals.back().get();
-			productions.emplace_back();		// create a new entry in productions, for the newly added nonterminal. The index in productions is two smaller than the index in nonTerminals
-			productionNames.emplace_back();	// create a new entry in productionNames, for the newly added nonterminal
-		}
-		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-		std::cout << "\tName: ";
-		std::cin >> name;
-		productionNames[i - 2].push_back(name);
-		out << '\t' << name << '\r' << std::endl;
-		std::cout << "\t-> ";
-		productions[i - 2].emplace_back();	// add a slot for a new production for the current nonterminal
-		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');		// clear the input buffer
-		std::getline(std::cin, name);	// and get a new line representing the full rhs of the production
-		out << '\t' << name << '\r' << std::endl;
-		string::const_iterator it = name.begin(), begin, end = name.end();
-		while (true) // break up string into space separated tokens and add those to the newly created production (just strings so far)
-		{
-			while (it != end && std::isspace(*it))
-				it++;
-			if (it == end)
-				break;
-			begin = it;
-			while (it != end && !std::isspace(*it))
-				it++;
-			productions[i - 2].back().push_back(string(begin, it));
+		case Reader::NAME:
+			productionNames[i - 2].push_back(move(name));
+			productions[i - 2].emplace_back();	// add a slot for a new production for the current nonterminal
+			break;
+		case Reader::RHS:
+			productions[i - 2].back().push_back(move(name));
+			break;
+		case Reader::END:
+			End = true;
+			break;
+		default:
+			return grammer;
 		}
 	}
+
 	grammer.nonTerminals[1]->AddProduction("", { grammer.nonTerminals[2].get() }); // link the automatically generated acceptor nonterminal to the start symbol of the user grammer using a production
 	for (size_t i = 0; i < productions.size(); i++) // this loop turns the primitive productions array above into actual productions, now that the names of all the nonterminals are known.
 	{	// i + 2 represents the nonterminal number. Once again the two automatically generated nonterminals are not counted (terminated and acceptor)
