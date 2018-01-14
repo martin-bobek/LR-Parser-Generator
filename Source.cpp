@@ -177,7 +177,8 @@ public:
 	void InitializeFollow();		// computes which terminals can directly follow a nonTerminal (including END terminal)
 	void GenerateDfa(std::ostream &out);
 	
-	void Print(ostream &os, istream &iClass, istream &iTerminals, istream &iDefinitions) const;
+	void PrintHeader(ostream &os, istream &iClass, istream &iTerminals) const;
+	void PrintDefinitions(ostream &os) const;
 private:
 	Grammer();	// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	class DFA
@@ -249,7 +250,7 @@ int main(int argc, char *argv[])
 	if (argc != 6)
 	{
 		std::cerr << "Improper number of arguments entered!" << std::endl;
-		return 0;
+		return 1;
 	}
 	std::ofstream iGrammer(argv[5]);
 	if (iGrammer.fail())
@@ -283,13 +284,14 @@ int main(int argc, char *argv[])
 			std::cerr << "Failed to open file 3!" << std::endl;
 			return 1;
 		}
-		std::ifstream iDefinitions(argv[4]);
-		if (iDefinitions.fail())
+		grammer.PrintHeader(os, iClass, iTerminals);
+		os = std::ofstream(argv[4]);
+		if (os.fail())
 		{
 			std::cerr << "Failed to open file 4!" << std::endl;
 			return 1;
 		}
-		grammer.Print(os, iClass, iTerminals, iDefinitions);
+		grammer.PrintDefinitions(os);
 	}
 	catch (char *msg)
 	{
@@ -863,7 +865,7 @@ Grammer::Grammer() : dfa(nfa) // an empty NFA has already been default construct
 	nonTerminals.push_back(move(acceptor));
 	terminals.push_back(move(end));				// adds the end terminal
 }
-void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &iDefinitions) const
+void Grammer::PrintHeader(ostream &os, istream &iClass, istream &iTerminals) const
 {
 	os << "#include <iostream>\n"
 		"#include <istream>\n"
@@ -871,14 +873,17 @@ void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &
 		"#include <stack>\n"
 		"#include <string>\n"
 		"#include <vector>\n\n"
-		"using std::move;\n\n"
+		"using std::move;\n"
+		"using std::tuple;\n\n"
+		"class CompilerError;\n"
 		"class Symbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		os << "class " << nonTerminals[i]->Name() << ";\n";
 	os << "class Terminal;\n";
 	for (size_t i = 1; i < terminals.size(); i++)
 		os << "class " << terminals[i]->Name() << ";\n";
-	os << "\ntypedef std::unique_ptr<Symbol> pSymbol;\n";
+	os << "\ntypedef std::unique_ptr<CompilerError> pCompilerError;\n"
+		"typedef std::unique_ptr<Symbol> pSymbol;\n";
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		os << "typedef std::unique_ptr<" << nonTerminals[i]->Name() << "> p" << nonTerminals[i]->Name() << ";\n";
 	os << "typedef std::unique_ptr<Terminal> pTerminal;\n";
@@ -919,25 +924,14 @@ void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &
 	for (size_t i = 2; i < nonTerminals.size(); i++)
 		nonTerminals[i]->PrintClass(os);
 	FCopy(os, iTerminals);
-	/*
-	os << "class Terminal : public Symbol \n"
-		"{\n"
-		"public:\n"
-		"\tvirtual ~Terminal() = 0 {}\n"
-		"\tvirtual bool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const = 0;\n"
-		"};\n";
-	for (size_t i = 1; i < terminals.size(); i++)
-		os << "class " << terminals[i]->Name() << " : public Terminal\n"
-		"{\n"
-		"public:\n"
-		"\t~" << terminals[i]->Name() << "() = default;\n"
-		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err) const;\n"
-		"};\n";
-	*/
 	os << "namespace End\n"
 		"{\n"
 		"\tbool Process(Stack &stack, SymStack &symStack, Parser::Error &err);\n"
-		"}\n\n\n\n"
+		"}";
+}
+void Grammer::PrintDefinitions(ostream &os) const
+{
+	os << "#include \"SyntaxTree.h\"\n\n"
 		"bool Parser::CreateTree()\n"
 		"{\n"
 		"\tStack stack;\n"
@@ -959,8 +953,6 @@ void Grammer::Print(ostream &os, istream &iClass, istream &iTerminals, istream &
 	for (size_t i = 1; i < terminals.size(); i++)
 		terminals[i]->PrintActions(os);
 	terminals[0]->PrintActions(os, true);
-	os << "\n\n";
-	FCopy(os, iDefinitions);
 }
 
 void Grammer::DFA::CreateActions(Grammer &grammer, std::ostream &out) const
