@@ -40,6 +40,25 @@ typedef reference_wrapper<NFA> rNFA;
 vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB);	// computes the union of two sets of pointers. assumes setA, setB are in increasing order. Result is then also ordered
 void FCopy(ostream &os, istream &is);
 
+class Reader
+{
+public:
+	enum Token { LHS, NAME, RHS, SHIFT, REDUCE, END, FAIL, UNDEFINED };
+	Reader(std::ifstream &&in) : in(move(in)) {}
+	Reader &operator>>(std::string &str);
+	operator Token() const { return lastToken; }
+private:
+	enum Lex_t { INVALID_L, START_L, PROD_L, REDUCE_L, SHIFT_L, NAME_L };
+	enum State_t { WAIT_START, FOUND_START, WAIT_NAME, WAIT_PROD, FOUND_PROD, FOUND_SHIFT, FOUND_REDUCE };
+	static Lex_t Lexer_1(std::string::iterator &it, std::string::iterator end);
+	static Lex_t Lexer_2(std::string::iterator &it, std::string::iterator end);
+
+	std::ifstream in;
+	std::string word;
+	std::string::iterator it = word.end();
+	Token lastToken = UNDEFINED;
+	State_t state = WAIT_START;
+};
 class Symbol
 {
 public:
@@ -55,11 +74,12 @@ protected:
 	Symbol(string &&name) : name(move(name)) {}
 	string name;										// should this be private
 };
+inline Symbol::~Symbol() = default;
 class NFA
 {
 public:
 	NFA() = default;			// creates empty nfa object
-	void Initialize(Production &production, const NonTerminal *nonTerminal, size_t numProduction); // generates a string of nfa states which represent (reduce to) a production. This includes recursively adding epsilon transitions to NFA's which reduce to nonterminals in this production. nonTerminal is a pointer to the LHS of the production, and numProduction identifies which production of nonTerminal this is
+	void Initialize(Production &production, NonTerminal *nonTerminal, size_t numProduction); // generates a string of nfa states which represent (reduce to) a production. This includes recursively adding epsilon transitions to NFA's which reduce to nonterminals in this production. nonTerminal is a pointer to the LHS of the production, and numProduction identifies which production of nonTerminal this is
 	NFA(const NFA &) = delete;
 	NFA(NFA &&rhs) = default;
 	NFA &operator=(const NFA &) = delete;
@@ -84,20 +104,26 @@ public:
 	void FollowConstraints(const NonTerminal *lhs) const;  // evaluates the preliminary constraints on follow sets of all the nonterminals in the production. lhs points to the nonterminal on the lhs of the production
 
 	NFA MoveNfa() { return move(nfa); }		// extracts NFA without copying when individual production nfa's are being assembled into the complete nfa
-	const State *GetRoot(const NonTerminal *nonTerminal, size_t production);	// Gets a pointer to the first state of the NFA for the production
+	const State *GetRoot(NonTerminal *nonTerminal, size_t production);	// Gets a pointer to the first state of the NFA for the production
 	size_t Size() const { return symbols.size(); }							// number of symbols on RHS of production
 	Symbol *operator[](size_t index) const { return symbols[index]; }		// returns pointer to a symbol on the RHS of production
 
 	void PrintDescription(ostream &os) const;
 	void PrintClass(ostream &os, const string &name) const;
 	void AddPrecedence(const Terminal *on, bool reduce);
-	bool ReduceOn(const Terminal *symbol) const;
-	bool ShiftOn(const Terminal *symbol) const;
+	bool ReduceOn(const Terminal *symbol);
+	bool ShiftOn(const Terminal *symbol);
+	void PrintUnusedResolutions() const;
 private:
 	std::string name;
 	vector<Symbol *> symbols;								// symbols on the RHS of the production, in order
-	vector<const Terminal *> reduceOn;
-	vector<const Terminal *> shiftOn;
+	struct Resolution {
+		Resolution(const Terminal *symbol) : symbol(symbol) {}
+		const Terminal *const symbol;
+		bool used = false;
+	};
+	vector<Resolution> reduceOn;
+	vector<Resolution> shiftOn;
 	NFA nfa;												// Linear nfa with transitions on the symbols on RHS of production
 public:
 	Production(std::string &&name, std::vector<Symbol *> &&symbols) : name(move(name)), symbols(move(symbols)) {}	// moves the vector of RHS symbols into the newly constructed object
@@ -122,9 +148,10 @@ public:
 	void StartNfa() { productions[0].GetRoot(nullptr, 0); }	// starts the recursive process of generating the individual production NFA's. The single production for the terminated nonterminal is used to generate the first NFA which recursively links to all other NFA's. A link to the terminated nonterminal production is not used, so is not provided in the parameters
 
 	void PrintClass(ostream &os) const;
-	bool ReduceOn(size_t production, const Terminal *symbol) const { return productions[production].ReduceOn(symbol); }
-	bool ShiftOn(size_t production, const Terminal *symbol) const { return productions[production].ShiftOn(symbol); }
+	bool ReduceOn(size_t production, const Terminal *symbol) { return productions[production].ReduceOn(symbol); }
+	bool ShiftOn(size_t production, const Terminal *symbol) { return productions[production].ShiftOn(symbol); }
 	void AddPrecedence(size_t production, const Terminal *symbol, bool reduce) { productions[production].AddPrecedence(symbol, reduce); }
+	void PrintUnusedResolutions() const;
 private:
 	bool nullable = false;					// field indicating that a nonterminal is nullable
 	vector<Terminal *> first;				// a set of all the terminals in the first set
@@ -160,7 +187,7 @@ private:
 class State
 {
 public:
-	State(const NonTerminal *nonTerminal = nullptr, size_t production = 0) : nonTerminal(nonTerminal), production(production) {} // Default constructs a non reduce state (nonTerminal is nullptr) if no arguments provided. Arguments used to construct a reduce state with a link to the production
+	State(NonTerminal *nonTerminal = nullptr, size_t production = 0) : nonTerminal(nonTerminal), production(production) {} // Default constructs a non reduce state (nonTerminal is nullptr) if no arguments provided. Arguments used to construct a reduce state with a link to the production
 	void AddTransition(const Symbol *symbol, const State *to) { transitions.push_back({ symbol, to }); } // Adds a transition, specifying the symbol on which the transition happens, and the state which is transitioned to 
 	bool AddReductions(size_t dfaState);	// checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
 	void AddNumber(size_t numState) { id = numState; };	// gives each state a unique number (in a consecutive range). These id's are used when the nfa is transformed into a dfa
@@ -173,7 +200,7 @@ private:
 		const State * to;			// pointer to the state which is transitioned to
 	};
 	vector<Transition> transitions;		// vector of all the possible transitions for the state
-	const NonTerminal *nonTerminal;		// if the state is the end of a production (reduce state), this points the nonterminal on the LHS of the production. If the state is not a reduce state, this is null
+	NonTerminal *nonTerminal;		// if the state is the end of a production (reduce state), this points the nonterminal on the LHS of the production. If the state is not a reduce state, this is null
 	size_t production;				// if the state is a reduce state, this gives the number of the production for the nonterminal
 	size_t id;			// each state is given a unique number (in a consecutive range). These id's are used when the nfa is transformed into a dfa
 };
@@ -189,6 +216,7 @@ public:
 	
 	void PrintHeader(ostream &os, istream &iClass, istream &iTerminals) const;
 	void PrintDefinitions(ostream &os) const;
+	void PrintUnusedResolutions() const;
 private:
 	Grammer();	// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	class DFA
@@ -230,6 +258,7 @@ public:
 	virtual bool operator==(const Reduce &) const = 0;
 	virtual bool IsReduce() const = 0;
 };
+inline Action::~Action() = default;
 class Shift : public Action
 {
 public:
@@ -246,38 +275,115 @@ private:
 class Reduce : public Action
 {
 public:
-	Reduce(const NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
+	Reduce(NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
 	void PrintAction(ostream &os) const;
 	void PrintName(ostream &os) const;
-	const Action *ResolveConflict(Action *original, Terminal *symbol) const;
+	const Action *ResolveConflict(Action *original, Terminal *symbol);
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Shift &) const { return false; }
 	bool operator==(const Reduce &rhs) const { return (nonTerminal == rhs.nonTerminal) && (production == rhs.production); }
 	bool IsReduce() const { return true; }
 private:
-	const NonTerminal *nonTerminal;
+	NonTerminal *nonTerminal;
 	size_t production;
 };
 
-class Reader 
-{
-public:
-	enum Token { LHS, NAME, RHS, SHIFT, REDUCE, END, FAIL, UNDEFINED };
-	Reader(std::ifstream &&in) : in(move(in)) {}
-	Reader &operator>>(std::string &str);
-	operator Token() const { return lastToken; }
-private:
-	enum Lex_t { INVALID_L, START_L, PROD_L, REDUCE_L, SHIFT_L, NAME_L };
-	enum State_t { WAIT_START, FOUND_START, WAIT_NAME, WAIT_PROD, FOUND_PROD, FOUND_SHIFT, FOUND_REDUCE };
-	static Lex_t Lexer_1(std::string::iterator &it, std::string::iterator end);
-	static Lex_t Lexer_2(std::string::iterator &it, std::string::iterator end);
 
-	std::ifstream in;
-	std::string word;
-	std::string::iterator it = word.end();
-	Token lastToken = UNDEFINED;
-	State_t state = WAIT_START;
-};
+int main(int argc, char *argv[])
+{
+	if (argc != 6)
+	{
+		std::cerr << "Improper number of arguments entered!" << std::endl;
+		return 1;
+	}
+	std::ifstream iGrammer(argv[1]);
+	if (iGrammer.fail())
+	{
+		std::cerr << "Failed to open file: " << argv[1] << std::endl;
+		return 1;
+	}
+	Reader reader(move(iGrammer));
+	Grammer grammer = Grammer::GetGrammer(reader); // Obtains productions from command line inputs and constructs a fully formed grammer
+	if (grammer.Fail())
+	{
+		std::cerr << "Failed to read grammer from input file!" << std::endl;
+		return 1;
+	}
+	grammer.InitializeNullable();			 // computes which nonterminals can produce just a empty string of symbols
+	grammer.InitializeFirst();				 // computes which terminals can be the first element of a string produced by a nonterminal
+	grammer.InitializeFollow();				 // computes which terminals can directly follow a nonTerminal (including END terminal)
+	if (!grammer.GenerateDfa())
+		return 0;
+	try
+	{
+		std::ifstream iClass(argv[2]);
+		if (iClass.fail())
+		{
+			std::cerr << "Failed to open file: " << argv[2] << std::endl;
+			return 1;
+		}
+		std::ifstream iTerminals(argv[3]);
+		if (iTerminals.fail())
+		{
+			std::cerr << "Failed to open file: " << argv[3] << std::endl;
+			return 1;
+		}
+		std::ofstream os(argv[4]);
+		if (os.fail())
+		{
+			std::cerr << "Failed to open file: " << argv[4] << std::endl;
+			return 1;
+		}
+		grammer.PrintHeader(os, iClass, iTerminals);
+		os = std::ofstream(argv[5]);
+		if (os.fail())
+		{
+			std::cerr << "Failed to open file: " << argv[5] << std::endl;
+			return 1;
+		}
+		grammer.PrintDefinitions(os);
+		grammer.PrintUnusedResolutions();
+	}
+	catch (char *msg)
+	{
+		std::cerr << msg << std::endl;
+	}
+}
+
+vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
+{		// this assumes SetA and SetB are in increasing ordered
+	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
+	vector<Terminal *> result;
+	result.reserve(sizeA + sizeB);	// reserves the maximum possible size for the union (no joint elements)
+	while (true)
+	{
+		if (iA == sizeA)	// ran out of setA elements. Just fill with rest of set B
+		{
+			while (iB < sizeB)
+				result.push_back(setB[iB++]);
+			return result;
+		}
+		if (iB == sizeB)	// ran out of setB elements. Just fill with rest of set A
+		{
+			while (iA < sizeA)
+				result.push_back(setA[iA++]);
+			return result;
+		}
+
+		if (setA[iA] < setB[iB])	// always add smallest element (from A or B)
+			result.push_back(setA[iA++]);
+		else if (setB[iB] < setA[iA])
+			result.push_back(setB[iB++]);
+		else
+			result.push_back(setA[++iB, iA++]);	// if there is an equal element, just push back one (comma operator not overloaded)
+	}
+}
+void FCopy(ostream &os, istream &is)
+{
+	char c;
+	while (is.get(c), !is.eof())
+		os.put(c);
+}
 
 Reader &Reader::operator>>(std::string &str)
 {
@@ -344,7 +450,6 @@ Reader &Reader::operator>>(std::string &str)
 		}
 	}
 }
-
 Reader::Lex_t Reader::Lexer_1(std::string::iterator &it, std::string::iterator end)
 {
 	if (it != end)
@@ -376,142 +481,6 @@ Reader::Lex_t Reader::Lexer_2(std::string::iterator &it, std::string::iterator e
 	return NAME_L;
 }
 
-void Production::AddPrecedence(const Terminal *on, bool reduce)
-{
-	if (reduce)
-		reduceOn.push_back(on);
-	else
-		shiftOn.push_back(on);
-}
-bool Production::ReduceOn(const Terminal *symbol) const
-{
-	for (const Terminal *sym : reduceOn)
-		if (sym == symbol)
-			return true;
-	return false;
-}
-bool Production::ShiftOn(const Terminal *symbol) const
-{
-	for (const Terminal *sym : shiftOn)
-		if (sym == symbol)
-			return true;
-	return false;
-}
-const Action *Reduce::ResolveConflict(Action *original, Terminal *symbol) const
-{
-	if (original->IsReduce())
-		std::cerr << "Unresolvable conflict found on " << symbol->Name() << ":\n\t";
-	else {
-		if (nonTerminal->ReduceOn(production, symbol))
-			return this;
-		if (nonTerminal->ShiftOn(production, symbol))
-			return original;
-		std::cerr << "Resolvable conflict found on " << symbol->Name() << ":\n\t";
-	}
-	PrintName(std::cerr);
-	std::cerr << '\t';
-	original->PrintName(std::cerr);
-	std::cerr << std::endl;
-	return nullptr;
-}
-
-int main(int argc, char *argv[])
-{
-	if (argc != 6)
-	{
-		std::cerr << "Improper number of arguments entered!" << std::endl;
-		return 1;
-	}
-	std::ifstream iGrammer(argv[1]);
-	if (iGrammer.fail())
-	{
-		std::cerr << "Failed to open file: " << argv[1] << std::endl;
-		return 1;
-	}
-	Reader reader(move(iGrammer));
-	Grammer grammer = Grammer::GetGrammer(reader); // Obtains productions from command line inputs and constructs a fully formed grammer
-	if (grammer.Fail())
-	{
-		std::cerr << "Failed to read grammer from input file!" << std::endl;
-		return 1;
-	}
-	grammer.InitializeNullable();			 // computes which nonterminals can produce just a empty string of symbols
-	grammer.InitializeFirst();				 // computes which terminals can be the first element of a string produced by a nonterminal
-	grammer.InitializeFollow();				 // computes which terminals can directly follow a nonTerminal (including END terminal)
-	if (!grammer.GenerateDfa())
-		return 0;
-	try
-	{
-		std::ifstream iClass(argv[2]);
-		if (iClass.fail())
-		{
-			std::cerr << "Failed to open file: " << argv[2] << std::endl;
-			return 1;
-		}
-		std::ifstream iTerminals(argv[3]);
-		if (iTerminals.fail())
-		{
-			std::cerr << "Failed to open file: " << argv[3] << std::endl;
-			return 1;
-		}
-		std::ofstream os(argv[4]);
-		if (os.fail())
-		{
-			std::cerr << "Failed to open file: " << argv[4] << std::endl;
-			return 1;
-		}
-		grammer.PrintHeader(os, iClass, iTerminals);
-		os = std::ofstream(argv[5]);
-		if (os.fail())
-		{
-			std::cerr << "Failed to open file: " << argv[5] << std::endl;
-			return 1;
-		}
-		grammer.PrintDefinitions(os);
-	}
-	catch (char *msg)
-	{
-		std::cerr << msg << std::endl;
-	}
-}
-
-vector<Terminal *> SetUnion(const vector<Terminal *> &setA, const vector<Terminal *> &setB)
-{		// this assumes SetA and SetB are in increasing ordered
-	size_t iA = 0, iB = 0, sizeA = setA.size(), sizeB = setB.size();
-	vector<Terminal *> result;
-	result.reserve(sizeA + sizeB);	// reserves the maximum possible size for the union (no joint elements)
-	while (true)
-	{
-		if (iA == sizeA)	// ran out of setA elements. Just fill with rest of set B
-		{
-			while (iB < sizeB)
-				result.push_back(setB[iB++]);
-			return result;
-		}
-		if (iB == sizeB)	// ran out of setB elements. Just fill with rest of set A
-		{
-			while (iA < sizeA)
-				result.push_back(setA[iA++]);
-			return result;
-		}
-
-		if (setA[iA] < setB[iB])	// always add smallest element (from A or B)
-			result.push_back(setA[iA++]);
-		else if (setB[iB] < setA[iA])
-			result.push_back(setB[iB++]);
-		else
-			result.push_back(setA[++iB, iA++]);	// if there is an equal element, just push back one (comma operator not overloaded)
-	}
-}
-void FCopy(ostream &os, istream &is)
-{
-	char c;
-	while (is.get(c), !is.eof())
-		os.put(c);
-}
-
-Symbol::~Symbol() {}
-
 bool NFA::AddReductions(size_t nfaState, size_t dfaState)
 {
 	return states[nfaState]->AddReductions(dfaState); // checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
@@ -534,7 +503,7 @@ void NFA::closureRecursion(size_t current, vector<bool> &checked, vector<bool> &
 			closureRecursion(tran, checked, subset);		// closureRecursion is then called for all these transitions to mark them in the subset and check if any other states can be reach by epsilon transitions. checked and subset are passed in by reference
 	}
 }
-void NFA::Initialize(Production &production, const NonTerminal *nonTerminal, size_t productionNum)
+void NFA::Initialize(Production &production, NonTerminal *nonTerminal, size_t productionNum)
 {
 	const size_t size = production.Size();	// gets number of symbols on RHS of production
 	states.reserve(size + 1);				// reserves a start state and one state for each symbol
@@ -582,6 +551,13 @@ vector<size_t> NFA::ReductionStates() const
 	return result;		// By construction, the state numbers in result are in assending order.
 }
 
+void Production::AddPrecedence(const Terminal *on, bool reduce)
+{
+	if (reduce)
+		reduceOn.push_back(on);
+	else
+		shiftOn.push_back(on);
+}
 vector<Terminal *> Production::ComputeFirst() const
 {
 	vector<Terminal *> result; // the first set of a production is the union of all the first sets of the RHS symbols up to and including the first symbol which is not nullable
@@ -605,7 +581,7 @@ void Production::FollowConstraints(const NonTerminal *lhs) const
 	for (vector<Symbol *>::const_iterator it = symbols.begin(); it != symbols.end(); it++)
 		(*it)->ExtractFollowConstraints(lhs, it + 1, symbols.end());
 }
-const State *Production::GetRoot(const NonTerminal *nonTerminal, size_t production)
+const State *Production::GetRoot(NonTerminal *nonTerminal, size_t production)
 {
 	if (nfa.Empty())		// checks if the NFA for this production has been created yet
 		nfa.Initialize(*this, nonTerminal, production);		// if it hasn't, a new nfa is created. This NFA contains transitions to all the NFA's which reduce to nonterminals on the RHS. The nonTerminal pointer and production number are used to create a link to the production in the reduce state
@@ -663,6 +639,32 @@ size_t Production::PrintReduce(ostream &os) const
 			"\t\tsymStack.pop();\n";
 	}
 	return symbols.size();
+}
+void Production::PrintUnusedResolutions() const
+{
+	for (const Resolution &res : shiftOn)
+		if (!res.used)
+			std::cout << "Unused Resolution!\n"
+			"\tShift on " << res.symbol->Name() << " for " << name << std::endl;
+	for (const Resolution &res : reduceOn)
+		if (!res.used)
+			std::cout << "Unused Resolution!\n"
+			"\tReduce on " << res.symbol->Name() << " for " << name << std::endl;
+
+}
+bool Production::ReduceOn(const Terminal *symbol)
+{
+	for (Resolution &res : reduceOn)
+		if (res.symbol == symbol)
+			return res.used = true;
+	return false;
+}
+bool Production::ShiftOn(const Terminal *symbol)
+{
+	for (Resolution &res : shiftOn)
+		if (res.symbol == symbol)
+			return res.used = true;
+	return false;
 }
 
 void NonTerminal::AddProduction(std::string &&name, std::vector<Symbol *> &&production)
@@ -794,6 +796,11 @@ void NonTerminal::PrintReduce(ostream &os, size_t production) const
 		"\t\treturn " << name << "::Process(stack, symStack, err) && Process(stack, symStack, err);\n";
 	if (numSymbols)
 		os << "\t}\n";
+}
+void NonTerminal::PrintUnusedResolutions() const
+{
+	for (const Production &production : productions)
+		production.PrintUnusedResolutions();
 }
 bool NonTerminal::SatisfyFollowConstraints()
 {	// the follow set must contain the follow sets of all the nonTerminals in the followConstraints set
@@ -1159,6 +1166,11 @@ void Grammer::PrintDefinitions(ostream &os) const
 		terminals[i]->PrintActions(os);
 	terminals[0]->PrintActions(os, true);
 }
+void Grammer::PrintUnusedResolutions() const
+{
+	for (const pNonTerminal &symbol : nonTerminals)
+		symbol->PrintUnusedResolutions();
+}
 
 bool Grammer::DFA::CreateActions(Grammer &grammer) const
 {
@@ -1338,7 +1350,6 @@ Grammer::DFA Grammer::DFA::Optimize(const DFA &dfa)
 	return DFA(dfa.nfa);
 }
 
-Action::~Action() {}
 void Shift::PrintAction(ostream &os) const
 {
 	os << "\t\tstack.push(" << to << ");\n"
@@ -1352,4 +1363,21 @@ void Reduce::PrintName(ostream &os) const
 {
 	os << "Reduce: ";
 	nonTerminal->PrintProductionDescription(os, production);
+}
+const Action *Reduce::ResolveConflict(Action *original, Terminal *symbol)
+{
+	if (original->IsReduce())
+		std::cerr << "Unresolvable conflict found on " << symbol->Name() << ":\n\t";
+	else {
+		if (nonTerminal->ReduceOn(production, symbol))
+			return this;
+		if (nonTerminal->ShiftOn(production, symbol))
+			return original;
+		std::cerr << "Resolvable conflict found on " << symbol->Name() << ":\n\t";
+	}
+	PrintName(std::cerr);
+	std::cerr << '\t';
+	original->PrintName(std::cerr);
+	std::cerr << std::endl;
+	return nullptr;
 }
