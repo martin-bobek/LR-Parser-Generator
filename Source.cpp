@@ -124,6 +124,7 @@ public:
 	void PrintClass(ostream &os) const;
 	bool ReduceOn(size_t production, const Terminal *symbol) const { return productions[production].ReduceOn(symbol); }
 	bool ShiftOn(size_t production, const Terminal *symbol) const { return productions[production].ShiftOn(symbol); }
+	void AddPrecedence(size_t production, const Terminal *symbol, bool reduce) { productions[production].AddPrecedence(symbol, reduce); }
 private:
 	bool nullable = false;					// field indicating that a nonterminal is nullable
 	vector<Terminal *> first;				// a set of all the terminals in the first set
@@ -180,7 +181,7 @@ class Grammer
 {
 public:
 	static Grammer GetGrammer(Reader &in);	// Obtains productions from command line inputs and constructs a fully formed grammer, including an END symbol and the two head nonterminals (terminated and acceptor)
-	bool Fail() const { return terminals.size() <= 1; }
+	bool Fail() const { return fail; }
 	void InitializeNullable();		// computes which nonterminals can produce just a empty string of symbols and marks this in a nullable field
 	void InitializeFirst();			// computes which terminals can be the first element of a string produced by a nonterminal
 	void InitializeFollow();		// computes which terminals can directly follow a nonTerminal (including END terminal)
@@ -216,6 +217,7 @@ private:
 
 	vector<pNonTerminal> nonTerminals;	// all the nonterminals for the grammer. This arrays has ownership of all the nonterminal objects
 	vector<pTerminal> terminals;		// all the terminals for the grammer. This array has ownership of all the terminal objects
+	bool fail = false;
 };
 class Action
 {
@@ -260,13 +262,13 @@ private:
 class Reader 
 {
 public:
-	enum Token { LHS, NAME, RHS, END, FAIL, UNDEFINED };
+	enum Token { LHS, NAME, RHS, SHIFT, REDUCE, END, FAIL, UNDEFINED };
 	Reader(std::ifstream &&in) : in(move(in)) {}
 	Reader &operator>>(std::string &str);
 	operator Token() const { return lastToken; }
 private:
-	enum Lex_t { INVALID_L, START_L, PROD_L, NAME_L };
-	enum State_t { WAIT_START, FOUND_START, WAIT_NAME, WAIT_PROD, FOUND_PROD };
+	enum Lex_t { INVALID_L, START_L, PROD_L, REDUCE_L, SHIFT_L, NAME_L };
+	enum State_t { WAIT_START, FOUND_START, WAIT_NAME, WAIT_PROD, FOUND_PROD, FOUND_SHIFT, FOUND_REDUCE };
 	static Lex_t Lexer_1(std::string::iterator &it, std::string::iterator end);
 	static Lex_t Lexer_2(std::string::iterator &it, std::string::iterator end);
 
@@ -282,7 +284,7 @@ Reader &Reader::operator>>(std::string &str)
 	while (true) {
 		if (it == word.end()) {
 			if (!(in >> word)) {
-				if (in.eof() && (state == WAIT_START || state == FOUND_PROD))
+				if (in.eof() && (state == WAIT_START || state == FOUND_PROD || state == FOUND_SHIFT || state == FOUND_REDUCE))
 					lastToken = END;
 				else
 					lastToken = FAIL;
@@ -294,7 +296,7 @@ Reader &Reader::operator>>(std::string &str)
 		lastToken = FAIL;
 		switch (Lexer_1(it, word.end())) {
 		case START_L:
-			if (state == WAIT_START || state == FOUND_PROD) {
+			if (state == WAIT_START || state == FOUND_PROD || state == FOUND_SHIFT || state == FOUND_REDUCE) {
 				state = FOUND_START;
 				break;
 			}
@@ -302,6 +304,18 @@ Reader &Reader::operator>>(std::string &str)
 		case PROD_L:
 			if (state == WAIT_PROD) {
 				state = FOUND_PROD;
+				break;
+			}
+			return *this;
+		case SHIFT_L:
+			if (state == FOUND_PROD || state == FOUND_SHIFT || state == FOUND_REDUCE) {
+				state = FOUND_SHIFT;
+				break;
+			}
+			return *this;
+		case REDUCE_L:
+			if (state == FOUND_PROD || state == FOUND_SHIFT || state == FOUND_REDUCE) {
+				state = FOUND_REDUCE;
 				break;
 			}
 			return *this;
@@ -314,12 +328,16 @@ Reader &Reader::operator>>(std::string &str)
 			else if (state == WAIT_NAME) {
 				state = WAIT_PROD;
 				lastToken = NAME;
-				str = std::string(begin, it);
 			}
-			else if (state == FOUND_PROD) {
+			else if (state == FOUND_PROD)
 				lastToken = RHS;
-				str = std::string(begin, it);
-			}
+			else if (state == FOUND_SHIFT)
+				lastToken = SHIFT;
+			else if (state == FOUND_REDUCE)
+				lastToken = REDUCE;
+			else
+				return *this;
+			str = std::string(begin, it);
 			return *this;
 		default:
 			return *this;
@@ -336,6 +354,10 @@ Reader::Lex_t Reader::Lexer_1(std::string::iterator &it, std::string::iterator e
 			return START_L;
 		else if (c == '>')
 			return PROD_L;
+		else if (c == '^')
+			return REDUCE_L;
+		else if (c == '+')
+			return SHIFT_L;
 		else if (std::isalpha(c) || c == '_')
 			return Lexer_2(it, end);
 	}
@@ -377,7 +399,7 @@ bool Production::ShiftOn(const Terminal *symbol) const
 }
 const Action *Reduce::ResolveConflict(Action *original, Terminal *symbol) const
 {
-	if (original->IsReduce())								// purposefully wrong to test this code.
+	if (original->IsReduce())
 		std::cerr << "Unresolvable conflict found on " << symbol->Name() << ":\n\t";
 	else {
 		if (nonTerminal->ReduceOn(production, symbol))
@@ -420,20 +442,20 @@ int main(int argc, char *argv[])
 		return 0;
 	try
 	{
-		std::ofstream os(argv[2]);
-		if (os.fail())
+		std::ifstream iClass(argv[2]);
+		if (iClass.fail())
 		{
 			std::cerr << "Failed to open file: " << argv[2] << std::endl;
 			return 1;
 		}
-		std::ifstream iClass(argv[3]);
-		if (iClass.fail())
+		std::ifstream iTerminals(argv[3]);
+		if (iTerminals.fail())
 		{
 			std::cerr << "Failed to open file: " << argv[3] << std::endl;
 			return 1;
 		}
-		std::ifstream iTerminals(argv[4]);
-		if (iTerminals.fail())
+		std::ofstream os(argv[4]);
+		if (os.fail())
 		{
 			std::cerr << "Failed to open file: " << argv[4] << std::endl;
 			return 1;
@@ -795,7 +817,7 @@ bool Terminal::AddReduction(size_t from, pReduce &&reduce)
 		const Action *resolution = reduce->ResolveConflict(actions[from].get(), this);
 		if (!resolution)
 			return false;
-		if (reduce == actions[from])
+		if (resolution == actions[from].get())
 			return true;
 	}
 	actions[from] = move(reduce);
@@ -845,7 +867,7 @@ bool State::AddReductions(size_t dfaState)
 			if (!terminal->AddReduction(dfaState, pReduce(new Reduce(nonTerminal, production))))	// Add the reduction to all the terminal symbols in Follow. Parameters nonTerminal and production are used to figure out how many symbols need to be popped off the stack and what nonTerminal symbol needs to put in its place. dfaState indicates from which dfa state this transition should happen
 				conflicts = true;
 	}
-	return conflicts;
+	return !conflicts;
 }
 vector<size_t> State::TransitionList(const Symbol *symbol) const
 {
@@ -898,6 +920,8 @@ Grammer Grammer::GetGrammer(Reader &in)
 {
 	Grammer grammer;		// sets up the head of the grammer: terminated -> acceptor end; acceptor -> start symbol of user grammer
 	vector<vector<vector<string>>> productions; // preliminary productions array containing just string names productions[which nonTerminal][which production][which RHS symbol] = name
+	vector<vector<vector<string>>> shifts;
+	vector<vector<vector<string>>> reduces;
 	vector<vector<string>> productionNames; // names of the productions to be used when defining classes. productionName[which nonTerminal][which production] = name
 
 	size_t i = 0;
@@ -923,20 +947,31 @@ Grammer Grammer::GetGrammer(Reader &in)
 				nonTerminal = grammer.nonTerminals.back().get();
 				productions.emplace_back();		// create a new entry in productions, for the newly added nonterminal. The index in productions is two smaller than the index in nonTerminals
 				productionNames.emplace_back();	// create a new entry in productionNames, for the newly added nonterminal
+				shifts.emplace_back();
+				reduces.emplace_back();
 			}
 			break;
 		}
 		case Reader::NAME:
 			productionNames[i - 2].push_back(move(name));
 			productions[i - 2].emplace_back();	// add a slot for a new production for the current nonterminal
+			shifts[i - 2].emplace_back();
+			reduces[i - 2].emplace_back();
 			break;
 		case Reader::RHS:
 			productions[i - 2].back().push_back(move(name));
+			break;
+		case Reader::SHIFT:
+			shifts[i - 2].back().push_back(move(name));
+			break;
+		case Reader::REDUCE:
+			reduces[i - 2].back().push_back(move(name));
 			break;
 		case Reader::END:
 			End = true;
 			break;
 		default:
+			grammer.fail = true;
 			return grammer;
 		}
 	}
@@ -973,6 +1008,42 @@ Grammer Grammer::GetGrammer(Reader &in)
 				symbols[k] = grammer.terminals.back().get();
 			}
 			grammer.nonTerminals[i + 2]->AddProduction(move(productionNames[i][j]), move(symbols));	// once all the names are matched to symbol object, a true production is created using the symbol pointers
+		}
+	}
+	for (size_t i = 0; i < productions.size(); i++)
+	{
+		for (size_t j = 0; j < productions[i].size(); j++)
+		{
+			for (const std::string &name : shifts[i][j])
+			{
+				const Terminal *symbol = nullptr;
+				for (const auto &terminal : grammer.terminals) {
+					if (name == terminal->Name()) {
+						symbol = terminal.get();
+						break;
+					}
+				}
+				if (!symbol) {
+					grammer.fail = true;
+					return grammer;
+				}
+				grammer.nonTerminals[i + 2]->AddPrecedence(j, symbol, false);
+			}
+			for (const std::string &name : reduces[i][j])
+			{
+				const Terminal *symbol = nullptr;
+				for (const auto &terminal : grammer.terminals) {
+					if (name == terminal->Name()) {
+						symbol = terminal.get();
+						break;
+					}
+				}
+				if (!symbol) {
+					grammer.fail = true;
+					return grammer;
+				}
+				grammer.nonTerminals[i + 2]->AddPrecedence(j, symbol, true);
+			}
 		}
 	}
 	return grammer;		// returns the now completed grammer
@@ -1098,7 +1169,7 @@ bool Grammer::DFA::CreateActions(Grammer &grammer) const
 	for (size_t i = 0; i < transitions.size(); i++)	// loop through all the dfa states to add shift/go transitions
 		for (auto &transition : transitions[i])		// get the transition table for the ith state, and loop through all the transitions
 			transition.on->AddShiftGo(i, transition.to);	// the transition to whichever symbol the transition occurs on. i is used to specify the state on which the transition occurs, and transition.to is used to specify the new state after the transition
-	bool conflicts = true;
+	bool conflicts = false;
 	for (size_t dfaState = 0; dfaState < states.size(); dfaState++)		// A dfa state is a reduce state for a production only if it contains an nfa state with a reduction for that production
 		for (size_t nfaState = 0; nfaState < states[0].size(); nfaState++) // for each state, all the nfa states are checked in its subset
 			if (states[dfaState][nfaState])	// if the dfa state contains an nfa state then
