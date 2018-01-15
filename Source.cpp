@@ -67,7 +67,7 @@ public:
 	bool Empty() const { return states.empty(); }	// returns true if the NFA states have not yet been created (the NFA has just been defualt constructed)
 	const State *GetRoot() { return states[0].get(); }	// returns a pointer to the first state of nfa. Assumes the nfa has already been initialized
 	static NFA Merge(vector<vector<NFA>> &&nfas);		// Takes all the pieces of the final nfa (each piece represents a production) (these pieces are already fully interconnected with transitions) and merges them into a single NFA with ownership of all the states
-	void AddReductions(size_t nfaState, size_t dfaState, std::ostream &out);	// checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
+	bool AddReductions(size_t nfaState, size_t dfaState);	// checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
 	size_t Size() const { return states.size(); }		// returns the number of states in the NFA
 	vector<bool> &Closure(vector<bool> &subset) const;	// modifies subset (passed in by reference) to be the epsilon closure of the passed in set. Also returns a reference to the modified set
 	vector<bool> Move(const vector<bool> &subset, const Symbol *symbol) const;
@@ -90,9 +90,14 @@ public:
 
 	void PrintDescription(ostream &os) const;
 	void PrintClass(ostream &os, const string &name) const;
+	void AddPrecedence(const Terminal *on, bool reduce);
+	bool ReduceOn(const Terminal *symbol) const;
+	bool ShiftOn(const Terminal *symbol) const;
 private:
 	std::string name;
 	vector<Symbol *> symbols;								// symbols on the RHS of the production, in order
+	vector<const Terminal *> reduceOn;
+	vector<const Terminal *> shiftOn;
 	NFA nfa;												// Linear nfa with transitions on the symbols on RHS of production
 public:
 	Production(std::string &&name, std::vector<Symbol *> &&symbols) : name(move(name)), symbols(move(symbols)) {}	// moves the vector of RHS symbols into the newly constructed object
@@ -117,6 +122,8 @@ public:
 	void StartNfa() { productions[0].GetRoot(nullptr, 0); }	// starts the recursive process of generating the individual production NFA's. The single production for the terminated nonterminal is used to generate the first NFA which recursively links to all other NFA's. A link to the terminated nonterminal production is not used, so is not provided in the parameters
 
 	void PrintClass(ostream &os) const;
+	bool ReduceOn(size_t production, const Terminal *symbol) const { return productions[production].ReduceOn(symbol); }
+	bool ShiftOn(size_t production, const Terminal *symbol) const { return productions[production].ShiftOn(symbol); }
 private:
 	bool nullable = false;					// field indicating that a nonterminal is nullable
 	vector<Terminal *> first;				// a set of all the terminals in the first set
@@ -145,7 +152,7 @@ public:
 
 	void PrepareActions(size_t numStates) { actions.resize(numStates); }	// actions (shift/reduce) should have the same size as number of states (actions[i] represents the transition taken in the ith state). actions is filled with nullptr's, representing no transitions
 	void AddShiftGo(size_t from, size_t to);			// the "on" symbol was a terminal, so the transition is a shift. the appropriate shift object is added to actions
-	void AddReduction(size_t from, pReduce &&reduce, std::ostream &out);	// Checks to see if there is a conflict on the from state (another shift or reduction already exists on the from state). If there is a conflict, a precedence rule to resolve it is requested. The Reduce is then added (or not added) to the actions vector at the from state
+	bool AddReduction(size_t from, pReduce &&reduce);	// Checks to see if there is a conflict on the from state (another shift or reduction already exists on the from state). If there is a conflict, a precedence rule to resolve it is requested. The Reduce is then added (or not added) to the actions vector at the from state
 private:
 	vector<pAction> actions;
 };
@@ -154,7 +161,7 @@ class State
 public:
 	State(const NonTerminal *nonTerminal = nullptr, size_t production = 0) : nonTerminal(nonTerminal), production(production) {} // Default constructs a non reduce state (nonTerminal is nullptr) if no arguments provided. Arguments used to construct a reduce state with a link to the production
 	void AddTransition(const Symbol *symbol, const State *to) { transitions.push_back({ symbol, to }); } // Adds a transition, specifying the symbol on which the transition happens, and the state which is transitioned to 
-	void AddReductions(size_t dfaState, std::ostream &out);	// checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
+	bool AddReductions(size_t dfaState);	// checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
 	void AddNumber(size_t numState) { id = numState; };	// gives each state a unique number (in a consecutive range). These id's are used when the nfa is transformed into a dfa
 	vector<size_t> TransitionList(const Symbol *symbol) const;		// returns a list of the id's of states which can be reached by a single transition on the symbol from the current state
 	bool Reducible() const { return nonTerminal ? true : false; }	// Returns true if a nonTerminal can be reduced from this state (nonTerminal points to this nonterminal). Otherwise returns false (nonTerminal = nullptr)
@@ -177,7 +184,7 @@ public:
 	void InitializeNullable();		// computes which nonterminals can produce just a empty string of symbols and marks this in a nullable field
 	void InitializeFirst();			// computes which terminals can be the first element of a string produced by a nonterminal
 	void InitializeFollow();		// computes which terminals can directly follow a nonTerminal (including END terminal)
-	void GenerateDfa(std::ostream &out);
+	bool GenerateDfa();
 	
 	void PrintHeader(ostream &os, istream &iClass, istream &iTerminals) const;
 	void PrintDefinitions(ostream &os) const;
@@ -191,7 +198,7 @@ private:
 		DFA &operator=(DFA &&) = default;
 		static DFA Generate(NFA &nfa, const Grammer &grammer);	// takes an nfa and generates an equivalent dfa, omitting transitions on the terminated and accepting nonterminals. a pointer to grammer is needed in order to access terminals and nonterminals
 		static DFA Optimize(const DFA &dfa);
-		void CreateActions(Grammer &grammer, std::ostream &out) const;	// Analyzes the dfa and records all the go, reduce, and shift transitions inside the terminal and nonTerminal objects, asking for precedence rules when conflicts are found. After this, the terminals and nonterminal objects contain enough information to write the Parser program
+		bool CreateActions(Grammer &grammer) const;	// Analyzes the dfa and records all the go, reduce, and shift transitions inside the terminal and nonTerminal objects, asking for precedence rules when conflicts are found. After this, the terminals and nonterminal objects contain enough information to write the Parser program
 	private:
 		static bool isNonempty(const vector<bool> &subset);
 		vector<vector<bool>> states;	// contains subsets of the nfa states, representing the states of the dfa. Subsets of nfa states are represented by a vector where vec[i] = ith state is part of the set?
@@ -219,6 +226,7 @@ public:
 	virtual bool operator==(const Action &) const = 0;
 	virtual bool operator==(const Shift &) const = 0;
 	virtual bool operator==(const Reduce &) const = 0;
+	virtual bool IsReduce() const = 0;
 };
 class Shift : public Action
 {
@@ -229,6 +237,7 @@ public:
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Reduce &) const { return false; }
 	bool operator==(const Shift &rhs) const { return to == rhs.to; }
+	bool IsReduce() const { return false; }
 private:
 	size_t to;
 };
@@ -238,9 +247,11 @@ public:
 	Reduce(const NonTerminal *nonTerminal, size_t production) : nonTerminal(nonTerminal), production(production) {}
 	void PrintAction(ostream &os) const;
 	void PrintName(ostream &os) const;
+	const Action *ResolveConflict(Action *original, Terminal *symbol) const;
 	bool operator==(const Action &rhs) const { return rhs == *this; }
 	bool operator==(const Shift &) const { return false; }
 	bool operator==(const Reduce &rhs) const { return (nonTerminal == rhs.nonTerminal) && (production == rhs.production); }
+	bool IsReduce() const { return true; }
 private:
 	const NonTerminal *nonTerminal;
 	size_t production;
@@ -343,6 +354,45 @@ Reader::Lex_t Reader::Lexer_2(std::string::iterator &it, std::string::iterator e
 	return NAME_L;
 }
 
+void Production::AddPrecedence(const Terminal *on, bool reduce)
+{
+	if (reduce)
+		reduceOn.push_back(on);
+	else
+		shiftOn.push_back(on);
+}
+bool Production::ReduceOn(const Terminal *symbol) const
+{
+	for (const Terminal *sym : reduceOn)
+		if (sym == symbol)
+			return true;
+	return false;
+}
+bool Production::ShiftOn(const Terminal *symbol) const
+{
+	for (const Terminal *sym : shiftOn)
+		if (sym == symbol)
+			return true;
+	return false;
+}
+const Action *Reduce::ResolveConflict(Action *original, Terminal *symbol) const
+{
+	if (original->IsReduce())								// purposefully wrong to test this code.
+		std::cerr << "Unresolvable conflict found on " << symbol->Name() << ":\n\t";
+	else {
+		if (nonTerminal->ReduceOn(production, symbol))
+			return this;
+		if (nonTerminal->ShiftOn(production, symbol))
+			return original;
+		std::cerr << "Resolvable conflict found on " << symbol->Name() << ":\n\t";
+	}
+	PrintName(std::cerr);
+	std::cerr << '\t';
+	original->PrintName(std::cerr);
+	std::cerr << std::endl;
+	return nullptr;
+}
+
 int main(int argc, char *argv[])
 {
 	if (argc != 6)
@@ -366,8 +416,8 @@ int main(int argc, char *argv[])
 	grammer.InitializeNullable();			 // computes which nonterminals can produce just a empty string of symbols
 	grammer.InitializeFirst();				 // computes which terminals can be the first element of a string produced by a nonterminal
 	grammer.InitializeFollow();				 // computes which terminals can directly follow a nonTerminal (including END terminal)
-	grammer.GenerateDfa(std::cout);
-	
+	if (!grammer.GenerateDfa())
+		return 0;
 	try
 	{
 		std::ofstream os(argv[2]);
@@ -440,9 +490,9 @@ void FCopy(ostream &os, istream &is)
 
 Symbol::~Symbol() {}
 
-void NFA::AddReductions(size_t nfaState, size_t dfaState, std::ostream &out)
+bool NFA::AddReductions(size_t nfaState, size_t dfaState)
 {
-	states[nfaState]->AddReductions(dfaState, out); // checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
+	return states[nfaState]->AddReductions(dfaState); // checks to see if the nfaState (in the dfaState subset) is a reduce state, and if so adds adds a reduction transition on the appropriate terminals
 }
 vector<bool> &NFA::Closure(vector<bool> &subset) const
 {	// subset itself is modified to become the closure of the subset which was passed in
@@ -739,33 +789,17 @@ void NonTerminal::SetupFollowConstraints() const
 		production.FollowConstraints(this);
 }
 
-void Terminal::AddReduction(size_t from, pReduce &&reduce, std::ostream &out)
+bool Terminal::AddReduction(size_t from, pReduce &&reduce)
 {
-	if (actions[from]) {	// checks to see if there is already a shift transition on that state for this terminal. If there is, then there is a conflict for this grammer which needs to be resolved with a precedence rule
-		char choice;
-		std::cout << "Conflict:\n\tOn: " << name << "\n\t1 - ";
-		reduce->PrintName(std::cout);
-		std::cout << "\t2 - ";
-		actions[from]->PrintName(std::cout);
-		while (true) {
-			choice = '\0';
-			std::cout << "\tSelect action (1/2): ";
-			std::cin >> choice;
-			std::cin.clear();
-			std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-			if (choice == '1')
-			{
-				out << choice << '\r' << std::endl;
-				break;
-			}
-			else if (choice == '2')
-			{
-				out << choice << '\r' << std::endl;
-				return;
-			}
-		}
+	if (actions[from]) {
+		const Action *resolution = reduce->ResolveConflict(actions[from].get(), this);
+		if (!resolution)
+			return false;
+		if (reduce == actions[from])
+			return true;
 	}
-	actions[from] = move(reduce);		// The reduces object (with information about the production being reduced on) is added on the "from" state (the state on which the reduction should happen for this terminal)
+	actions[from] = move(reduce);
+	return true;
 }
 void Terminal::AddShiftGo(size_t from, size_t to)
 {
@@ -802,13 +836,16 @@ void Terminal::PrintActions(ostream &os, bool isEnd) const
 		"}";
 }
 
-void State::AddReductions(size_t dfaState, std::ostream &out)
+bool State::AddReductions(size_t dfaState)
 {	// dfaState is the state which contains this nfa state in its subset
+	bool conflicts = false;
 	if (nonTerminal)	// if nonTerminal is not null, then State was initialized as a reducing state, so there should be a reduction to that nonterminal on this state
 	{
 		for (auto terminal : nonTerminal->Follow())		// the reduction should only happen if the current Terminal being read is in the follow set of the nonTerminal being reduced to
-			terminal->AddReduction(dfaState, pReduce(new Reduce(nonTerminal, production)), out);	// Add the reduction to all the terminal symbols in Follow. Parameters nonTerminal and production are used to figure out how many symbols need to be popped off the stack and what nonTerminal symbol needs to put in its place. dfaState indicates from which dfa state this transition should happen
+			if (!terminal->AddReduction(dfaState, pReduce(new Reduce(nonTerminal, production))))	// Add the reduction to all the terminal symbols in Follow. Parameters nonTerminal and production are used to figure out how many symbols need to be popped off the stack and what nonTerminal symbol needs to put in its place. dfaState indicates from which dfa state this transition should happen
+				conflicts = true;
 	}
+	return conflicts;
 }
 vector<size_t> State::TransitionList(const Symbol *symbol) const
 {
@@ -940,7 +977,7 @@ Grammer Grammer::GetGrammer(Reader &in)
 	}
 	return grammer;		// returns the now completed grammer
 }
-void Grammer::GenerateDfa(std::ostream &out)
+bool Grammer::GenerateDfa()
 {
 	nonTerminals[0]->StartNfa();  // starts the recursive process of generating the individual production NFA's. The single production for the terminated nonterminal is used to generate the first NFA which recursively links to all other NFA's
 	vector<vector<NFA>> nfas;	// All the NFA's for all the productions will be moved here before merging. nfas[which nonterminal][which production] = nfa
@@ -951,7 +988,7 @@ void Grammer::GenerateDfa(std::ostream &out)
 
 	dfa = DFA::Generate(nfa, *this);	// The nfa is used to generate an equivalent DFA. The DFA ommits transitions on the terminated and accepting nonterminals since they are never taken during parsing. A pointer to the grammer is passed in to allow the function to access terminals and nonterminals
 	DFA::Optimize(dfa);					// not implemented yet
-	dfa.CreateActions(*this, out);
+	return dfa.CreateActions(*this);
 }
 Grammer::Grammer() : dfa(nfa) // an empty NFA has already been default constructed. It is used to construct an empty dfa (the reference to a valid nfa is necessary though
 {
@@ -1052,7 +1089,7 @@ void Grammer::PrintDefinitions(ostream &os) const
 	terminals[0]->PrintActions(os, true);
 }
 
-void Grammer::DFA::CreateActions(Grammer &grammer, std::ostream &out) const
+bool Grammer::DFA::CreateActions(Grammer &grammer) const
 {
 	for (auto &nonTerminal : grammer.nonTerminals)	// clear the go transitions of all nonTerminals
 		nonTerminal->PrepareGos(states.size());		// initialize the go transition vector to have the same size as the number of states and to have no transitions listed
@@ -1061,10 +1098,13 @@ void Grammer::DFA::CreateActions(Grammer &grammer, std::ostream &out) const
 	for (size_t i = 0; i < transitions.size(); i++)	// loop through all the dfa states to add shift/go transitions
 		for (auto &transition : transitions[i])		// get the transition table for the ith state, and loop through all the transitions
 			transition.on->AddShiftGo(i, transition.to);	// the transition to whichever symbol the transition occurs on. i is used to specify the state on which the transition occurs, and transition.to is used to specify the new state after the transition
+	bool conflicts = true;
 	for (size_t dfaState = 0; dfaState < states.size(); dfaState++)		// A dfa state is a reduce state for a production only if it contains an nfa state with a reduction for that production
 		for (size_t nfaState = 0; nfaState < states[0].size(); nfaState++) // for each state, all the nfa states are checked in its subset
 			if (states[dfaState][nfaState])	// if the dfa state contains an nfa state then
-				nfa.get().AddReductions(nfaState, dfaState, out);	// AddReductions checks if nfaState is a reduce state. If so, it attempts to add reductions on dfaState for all the terminals in the Follow set of nonTerminal being reduced to, requesting precedence rules for any conflicts
+				if (!nfa.get().AddReductions(nfaState, dfaState))	// AddReductions checks if nfaState is a reduce state. If so, it attempts to add reductions on dfaState for all the terminals in the Follow set of nonTerminal being reduced to, requesting precedence rules for any conflicts
+					conflicts = true;
+	return !conflicts;
 }
 Grammer::DFA Grammer::DFA::Generate(NFA &nfa, const Grammer &grammer)  /// note uses true state numbers (instead of state + 1)
 {
